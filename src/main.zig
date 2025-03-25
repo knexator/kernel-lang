@@ -23,9 +23,38 @@ pub fn main() !void {
 
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
-    var parser: Parser = .{ .remaining_text = sample_vau_program };
+    // var parser: Parser = .{ .remaining_text = sample_vau_program };
+    var parser: Parser = .{ .remaining_text = "10" };
+
     while (try parser.next(&bank)) |v| {
-        try stdout.print("value: {any}\n", .{v});
+        try stdout.print("read: {any}\n", .{v});
+        try stdout.print("eval'd: {any}\n", .{eval(v, Sexpr.builtin.nil)});
+    }
+}
+
+fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
+    assert(key.is(.atom));
+
+    // self evaluating symbols
+    if (isNumber(key.atom.value)) return key;
+
+    var remaining_list = env;
+    while (remaining_list.is(.pair)) {
+        const entry = remaining_list.pair.left;
+        assert(entry.is(.pair));
+        assert(entry.pair.left.is(.atom));
+        if (entry.pair.left.atom.equals(key.atom)) {
+            return entry.pair.right;
+        }
+    }
+    assert(remaining_list.equals(Sexpr.builtin.nil));
+    return null;
+}
+
+fn eval(expr: *const Sexpr, env: *const Sexpr) *const Sexpr {
+    switch (expr.*) {
+        .atom => return lookup(expr, env) orelse @panic("unbound variable"),
+        else => unreachable,
     }
 }
 
@@ -95,6 +124,10 @@ pub const Sexpr = union(enum) {
         };
     }
 
+    pub fn is(this: *const Sexpr, kind: std.meta.FieldEnum(Sexpr)) bool {
+        return std.meta.activeTag(this.*) == kind;
+    }
+
     pub fn getAt(this: *const Sexpr, address: Address) ?*const Sexpr {
         var res = this;
         for (address) |item| {
@@ -134,15 +167,15 @@ pub const Sexpr = union(enum) {
     }
 
     pub fn format(value: *const Sexpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: std.io.AnyWriter) !void {
-        std.debug.assert(std.mem.eql(u8, fmt, ""));
-        std.debug.assert(std.meta.eql(options, .{}));
+        assert(std.mem.eql(u8, fmt, ""));
+        assert(std.meta.eql(options, .{}));
         switch (value.*) {
             .atom => |a| try writer.writeAll(a.value),
             .pair => |p| {
                 try writer.writeAll("(");
                 try p.left.format("", options, writer);
                 var rest = p.right;
-                while (std.meta.activeTag(rest.*) == .pair) {
+                while (rest.is(.pair)) {
                     try writer.writeAll(" ");
                     try rest.pair.left.format("", options, writer);
                     rest = rest.pair.right;
@@ -219,5 +252,11 @@ pub const Parser = struct {
     }
 };
 
+fn isNumber(buf: []const u8) bool {
+    for (buf) |c| if (!std.ascii.isDigit(c)) return false;
+    return true;
+}
+
 const std = @import("std");
 const builtin = @import("builtin");
+const assert = std.debug.assert;
