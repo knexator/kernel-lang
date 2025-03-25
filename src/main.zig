@@ -10,6 +10,13 @@ test "$define!" {
     , "10");
 }
 
+// test "$vau" {
+//     try testHelper(std.testing.allocator,
+//         \\ ($define! foo ($vau (x y) _ x))
+//         \\ (foo a b)
+//     , "a");
+// }
+
 pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
@@ -20,13 +27,31 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
         break :blk result;
     };
     var parser: Parser = .{ .remaining_text = source };
-    var env = Sexpr.builtin.nil;
+    var env = makeKernelStandardEnvironment(&bank);
     var last_value = Sexpr.builtin.@"#inert";
     while (parser.next(&bank) catch @panic("bad text")) |v| {
         last_value = eval(v, &env, &bank);
     }
     try std.testing.expect(last_value.equals(expected));
 }
+
+const ground_environment: *const Sexpr = &.{ .pair = .{
+    .left = &.{
+        .pair = .{
+            .left = &.{
+                .pair = .{
+                    .left = &.{ .atom = .{ .value = "$define!" } },
+                    .right = &.{ .pair = .{
+                        .left = &.{ .atom = .{ .value = "builtin" } },
+                        .right = &.{ .atom = .{ .value = "$define!" } },
+                    } },
+                },
+            },
+            .right = Sexpr.builtin.nil,
+        },
+    },
+    .right = Sexpr.builtin.nil,
+} };
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -56,7 +81,7 @@ pub fn main() !void {
         \\ b
     };
 
-    var env = Sexpr.builtin.nil;
+    var env = makeKernelStandardEnvironment(&bank);
 
     while (try parser.next(&bank)) |v| {
         try stdout.print("read: {any}\n", .{v});
@@ -64,28 +89,53 @@ pub fn main() !void {
     }
 }
 
+fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) *const Sexpr {
+    return bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil));
+}
+
 fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
     assert(key.is(.atom));
+    assert(env.is(.pair));
 
     // self evaluating symbols
     if (isNumber(key.atom.value)) return key;
 
-    var remaining_list = env;
-    while (remaining_list.is(.pair)) {
-        const entry = remaining_list.pair.left;
-        remaining_list = remaining_list.pair.right;
-        assert(entry.is(.pair));
-        assert(entry.pair.left.is(.atom));
+    const local_bindings = env.pair.left;
+    const parent_envs = env.pair.right;
+
+    var remaining_bindings = local_bindings;
+    while (remaining_bindings.is(.pair)) {
+        const entry = remaining_bindings.pair.left;
+        remaining_bindings = remaining_bindings.pair.right;
+        assertPair(entry);
+        assertAtom(entry.pair.left);
         if (entry.pair.left.atom.equals(key.atom)) {
             return entry.pair.right;
         }
     }
-    assert(remaining_list.equals(Sexpr.builtin.nil));
+    assertEqual(remaining_bindings, Sexpr.builtin.nil);
+
+    var remaining_parent_envs = parent_envs;
+    while (remaining_parent_envs.is(.pair)) {
+        const parent_env = remaining_parent_envs.pair.left;
+        remaining_parent_envs = remaining_parent_envs.pair.right;
+        if (lookup(key, parent_env)) |result| {
+            return result;
+        }
+    }
+    assert(remaining_parent_envs.equals(Sexpr.builtin.nil));
+
     return null;
 }
 
 fn addToEnv(key: *const Sexpr, value: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) void {
-    env.* = bank.doPair(bank.doPair(key, value), env.*);
+    assertPair(env.*);
+    const local_bindings = env.*.pair.left;
+    const parent_envs = env.*.pair.right;
+    env.* = bank.doPair(
+        bank.doPair(bank.doPair(key, value), local_bindings),
+        parent_envs,
+    );
 }
 
 fn bind(definiend: *const Sexpr, expression: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) void {
@@ -104,11 +154,14 @@ fn bind(definiend: *const Sexpr, expression: *const Sexpr, env: **const Sexpr, b
 
 fn eval(expr: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) *const Sexpr {
     switch (expr.*) {
-        .atom => return lookup(expr, env.*) orelse @panic("unbound variable"),
+        .atom => return lookup(expr, env.*) orelse std.debug.panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
-            if (pair.left.equals(&.{ .atom = .{ .value = "$define!" } })) {
+            const operative = eval(pair.left, env, bank);
+            if (operative.equals(&.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
                 bind(pair.right.pair.left, pair.right.pair.right.pair.left, env, bank);
                 return Sexpr.builtin.@"#inert";
+                // } else if (pair.left.equals(&.{ .atom = .{ .value = "$vau" } })) {
+                //     unreachable;
             } else {
                 unreachable;
             }
@@ -312,6 +365,18 @@ pub const Parser = struct {
     }
 };
 
+fn assertPair(v: *const Sexpr) void {
+    if (!v.is(.pair)) panic("Expected a Pair, found \"{any}\"", .{v});
+}
+
+fn assertAtom(v: *const Sexpr) void {
+    if (!v.is(.atom)) panic("Expected an Atom, found \"{any}\"", .{v});
+}
+
+fn assertEqual(a: *const Sexpr, b: *const Sexpr) void {
+    if (!a.equals(b)) panic("Expected equality between\n\t{any}\nand\n\t{any}", .{ a, b });
+}
+
 fn isNumber(buf: []const u8) bool {
     for (buf) |c| if (!std.ascii.isDigit(c)) return false;
     return true;
@@ -320,3 +385,4 @@ fn isNumber(buf: []const u8) bool {
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
+const panic = std.debug.panic;
