@@ -5,7 +5,7 @@ const sample_vau_program =
 
 test "$define!" {
     try testHelper(std.testing.allocator,
-        \\ ($define! a 10)
+        \\ ($define! ((a) . b) ((10) . 11))
         \\ a
     , "10");
 }
@@ -51,8 +51,9 @@ pub fn main() !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
     var parser: Parser = .{ .remaining_text = 
-        \\ ($define! a 10) 
+        \\ ($define! (a b) (10 11))
         \\ a
+        \\ b
     };
 
     var env = Sexpr.builtin.nil;
@@ -72,6 +73,7 @@ fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
     var remaining_list = env;
     while (remaining_list.is(.pair)) {
         const entry = remaining_list.pair.left;
+        remaining_list = remaining_list.pair.right;
         assert(entry.is(.pair));
         assert(entry.pair.left.is(.atom));
         if (entry.pair.left.atom.equals(key.atom)) {
@@ -82,14 +84,30 @@ fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
     return null;
 }
 
+fn addToEnv(key: *const Sexpr, value: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) void {
+    env.* = bank.doPair(bank.doPair(key, value), env.*);
+}
+
+fn bind(definiend: *const Sexpr, expression: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) void {
+    if (definiend.equals(Sexpr.builtin.nil)) {
+        assert(expression.equals(Sexpr.builtin.nil));
+    } else if (definiend.equals(Sexpr.builtin._)) {
+        // nothing
+    } else if (definiend.is(.atom)) {
+        addToEnv(definiend, expression, env, bank);
+    } else {
+        assert(expression.is(.pair));
+        bind(definiend.pair.left, expression.pair.left, env, bank);
+        bind(definiend.pair.right, expression.pair.right, env, bank);
+    }
+}
+
 fn eval(expr: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) *const Sexpr {
     switch (expr.*) {
         .atom => return lookup(expr, env.*) orelse @panic("unbound variable"),
         .pair => |pair| {
             if (pair.left.equals(&.{ .atom = .{ .value = "$define!" } })) {
-                const name = pair.right.pair.left;
-                const value = pair.right.pair.right.pair.left;
-                env.* = bank.doPair(bank.doPair(name, value), env.*);
+                bind(pair.right.pair.left, pair.right.pair.right.pair.left, env, bank);
                 return Sexpr.builtin.@"#inert";
             } else {
                 unreachable;
@@ -151,6 +169,7 @@ pub const Sexpr = union(enum) {
 
     pub const builtin: struct {
         nil: *const Sexpr = &.{ .atom = .{ .value = "nil" } },
+        _: *const Sexpr = &.{ .atom = .{ .value = "_" } },
         @"#inert": *const Sexpr = &.{ .atom = .{ .value = "#inert" } },
         true: *const Sexpr = &.{ .atom = .{ .value = "true" } },
         false: *const Sexpr = &.{ .atom = .{ .value = "false" } },
