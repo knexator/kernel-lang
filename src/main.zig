@@ -3,6 +3,31 @@ const sample_vau_program =
     \\ (print (factorial 3))
 ;
 
+test "$define!" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! a 10)
+        \\ a
+    , "10");
+}
+
+pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
+    var bank = Sexpr.Bank.init(gpa);
+    defer bank.deinit();
+    const expected = blk: {
+        var parser: Parser = .{ .remaining_text = expected_raw };
+        const result = (try parser.next(&bank)).?;
+        try std.testing.expect(try parser.next(&bank) == null);
+        break :blk result;
+    };
+    var parser: Parser = .{ .remaining_text = source };
+    var env = Sexpr.builtin.nil;
+    var last_value = Sexpr.builtin.@"#inert";
+    while (parser.next(&bank) catch @panic("bad text")) |v| {
+        last_value = eval(v, &env, &bank);
+    }
+    try std.testing.expect(last_value.equals(expected));
+}
+
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const is_debug = gpa: {
@@ -21,14 +46,20 @@ pub fn main() !void {
     const stdout = bw.writer();
     defer bw.flush() catch std.log.err("Failed to flush stdout", .{});
 
+    // TODO: REPL
+
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
-    // var parser: Parser = .{ .remaining_text = sample_vau_program };
-    var parser: Parser = .{ .remaining_text = "10" };
+    var parser: Parser = .{ .remaining_text = 
+        \\ ($define! a 10) 
+        \\ a
+    };
+
+    var env = Sexpr.builtin.nil;
 
     while (try parser.next(&bank)) |v| {
         try stdout.print("read: {any}\n", .{v});
-        try stdout.print("eval'd: {any}\n", .{eval(v, Sexpr.builtin.nil)});
+        try stdout.print("eval'd: {any}\n", .{eval(v, &env, &bank)});
     }
 }
 
@@ -51,10 +82,19 @@ fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
     return null;
 }
 
-fn eval(expr: *const Sexpr, env: *const Sexpr) *const Sexpr {
+fn eval(expr: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) *const Sexpr {
     switch (expr.*) {
-        .atom => return lookup(expr, env) orelse @panic("unbound variable"),
-        else => unreachable,
+        .atom => return lookup(expr, env.*) orelse @panic("unbound variable"),
+        .pair => |pair| {
+            if (pair.left.equals(&.{ .atom = .{ .value = "$define!" } })) {
+                const name = pair.right.pair.left;
+                const value = pair.right.pair.right.pair.left;
+                env.* = bank.doPair(bank.doPair(name, value), env.*);
+                return Sexpr.builtin.@"#inert";
+            } else {
+                unreachable;
+            }
+        },
     }
 }
 
@@ -97,22 +137,23 @@ pub const Sexpr = union(enum) {
         }
 
         pub fn doAtom(self: *Bank, value: []const u8) !*const Sexpr {
-            const res = try self.pool.create();
+            const res = self.pool.create() catch @panic("OoM");
             res.* = .{ .atom = .{ .value = value } };
             return res;
         }
 
-        pub fn doPair(self: *Bank, left: *const Sexpr, right: *const Sexpr) !*const Sexpr {
-            const res = try self.pool.create();
+        pub fn doPair(self: *Bank, left: *const Sexpr, right: *const Sexpr) *const Sexpr {
+            const res = self.pool.create() catch @panic("OoM");
             res.* = .{ .pair = .{ .left = left, .right = right } };
             return res;
         }
     };
 
     pub const builtin: struct {
+        nil: *const Sexpr = &.{ .atom = .{ .value = "nil" } },
+        @"#inert": *const Sexpr = &.{ .atom = .{ .value = "#inert" } },
         true: *const Sexpr = &.{ .atom = .{ .value = "true" } },
         false: *const Sexpr = &.{ .atom = .{ .value = "false" } },
-        nil: *const Sexpr = &.{ .atom = .{ .value = "nil" } },
     } = .{};
 
     pub fn equals(this: *const Sexpr, other: *const Sexpr) bool {
