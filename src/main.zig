@@ -36,7 +36,7 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
     try std.testing.expect(last_value.equals(expected));
 }
 
-const ground_environment: *const Sexpr = &.{ .pair = .{
+const ground_environment: Sexpr = .{ .pair = .{
     .left = &.{ .pair = .{
         .left = &.{ .pair = .{
             .left = &.{ .atom = .{ .value = "$define!" } },
@@ -53,10 +53,10 @@ const ground_environment: *const Sexpr = &.{ .pair = .{
                     .right = &.{ .atom = .{ .value = "$vau" } },
                 } },
             } },
-            .right = Sexpr.builtin.nil,
+            .right = &Sexpr.builtin.nil,
         } },
     } },
-    .right = Sexpr.builtin.nil,
+    .right = &Sexpr.builtin.nil,
 } };
 
 pub fn main() !void {
@@ -95,36 +95,36 @@ pub fn main() !void {
     }
 }
 
-fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) *const Sexpr {
+fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
     return bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil));
 }
 
-fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
+fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
     assert(key.is(.atom));
     assert(env.is(.pair));
 
     // self evaluating symbols
     if (isNumber(key.atom.value)) return key;
 
-    const local_bindings = env.pair.left;
-    const parent_envs = env.pair.right;
+    const local_bindings = env.pair.left.*;
+    const parent_envs = env.pair.right.*;
 
     var remaining_bindings = local_bindings;
     while (remaining_bindings.is(.pair)) {
-        const entry = remaining_bindings.pair.left;
-        remaining_bindings = remaining_bindings.pair.right;
+        const entry = remaining_bindings.pair.left.*;
+        remaining_bindings = remaining_bindings.pair.right.*;
         assertPair(entry);
-        assertAtom(entry.pair.left);
+        assertAtom(entry.pair.left.*);
         if (entry.pair.left.atom.equals(key.atom)) {
-            return entry.pair.right;
+            return entry.pair.right.*;
         }
     }
     assertEqual(remaining_bindings, Sexpr.builtin.nil);
 
     var remaining_parent_envs = parent_envs;
     while (remaining_parent_envs.is(.pair)) {
-        const parent_env = remaining_parent_envs.pair.left;
-        remaining_parent_envs = remaining_parent_envs.pair.right;
+        const parent_env = remaining_parent_envs.pair.left.*;
+        remaining_parent_envs = remaining_parent_envs.pair.right.*;
         if (lookup(key, parent_env)) |result| {
             return result;
         }
@@ -134,17 +134,17 @@ fn lookup(key: *const Sexpr, env: *const Sexpr) ?*const Sexpr {
     return null;
 }
 
-fn addToEnv(key: *const Sexpr, value: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) void {
+fn addToEnv(key: Sexpr, value: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) void {
     assertPair(env.*);
-    const local_bindings = env.*.pair.left;
-    const parent_envs = env.*.pair.right;
+    const local_bindings = env.*.pair.left.*;
+    const parent_envs = env.*.pair.right.*;
     env.* = bank.doPair(
         bank.doPair(bank.doPair(key, value), local_bindings),
         parent_envs,
     );
 }
 
-fn bind(definiend: *const Sexpr, expression: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) void {
+fn bind(definiend: Sexpr, expression: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) void {
     if (definiend.equals(Sexpr.builtin.nil)) {
         assert(expression.equals(Sexpr.builtin.nil));
     } else if (definiend.equals(Sexpr.builtin._)) {
@@ -153,30 +153,30 @@ fn bind(definiend: *const Sexpr, expression: *const Sexpr, env: **const Sexpr, b
         addToEnv(definiend, expression, env, bank);
     } else {
         assert(expression.is(.pair));
-        bind(definiend.pair.left, expression.pair.left, env, bank);
-        bind(definiend.pair.right, expression.pair.right, env, bank);
+        bind(definiend.pair.left.*, expression.pair.left.*, env, bank);
+        bind(definiend.pair.right.*, expression.pair.right.*, env, bank);
     }
 }
 
-fn eval(expr: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) *const Sexpr {
-    switch (expr.*) {
+fn eval(expr: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) Sexpr {
+    switch (expr) {
         .ref => panic("Don't know how to eval a ref", .{}),
         .atom => return lookup(expr, env.*) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
-            const operative = eval(pair.left, env, bank);
-            const argument = pair.right;
-            if (operative.equals(&.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
-                const formal_tree = argument.pair.left;
-                const value = eval(argument.pair.right.pair.left, env, bank);
+            const operative = eval(pair.left.*, env, bank);
+            const argument = pair.right.*;
+            if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
+                const formal_tree = argument.pair.left.*;
+                const value = eval(argument.pair.right.pair.left.*, env, bank);
                 bind(formal_tree, value, env, bank);
                 return Sexpr.builtin.@"#inert";
-            } else if (operative.equals(&.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
-                return bank.doPair(bank.doAtom("compiled_vau"), bank.doPair(bank.doRef(env), pair.right));
-            } else if (operative.is(.pair) and operative.pair.left.equals(&.{ .atom = .{ .value = "compiled_vau" } })) {
-                const static_env = operative.pair.right.pair.left;
-                const formal_tree = operative.pair.right.pair.right.pair.left;
-                const dynamic_env_name = operative.pair.right.pair.right.pair.right.pair.left;
-                const body_expr = operative.pair.right.pair.right.pair.right.pair.right.pair.left;
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
+                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(.{ .ref = env }, pair.right.*));
+            } else if (operative.is(.pair) and operative.pair.left.equals(.{ .atom = .{ .value = "compiled_vau" } })) {
+                const static_env = operative.pair.right.pair.left.*;
+                const formal_tree = operative.pair.right.pair.right.pair.left.*;
+                const dynamic_env_name = operative.pair.right.pair.right.pair.right.pair.left.*;
+                const body_expr = operative.pair.right.pair.right.pair.right.pair.right.pair.left.*;
 
                 var temp_env = bank.doPair(Sexpr.builtin.nil, static_env);
                 bind(formal_tree, argument, &temp_env, bank);
@@ -202,13 +202,13 @@ pub const Pair = struct {
     right: *const Sexpr,
 
     pub fn equals(this: Pair, other: Pair) bool {
-        return this.left.equals(other.left) and this.right.equals(other.right);
+        return this.left.equals(other.left.*) and this.right.equals(other.right.*);
     }
 };
 pub const Sexpr = union(enum) {
     atom: Atom,
     pair: Pair,
-    ref: **const Sexpr,
+    ref: *Sexpr,
 
     pub const Address = struct {
         value: []const Item,
@@ -229,37 +229,43 @@ pub const Sexpr = union(enum) {
             self.pool.deinit();
         }
 
-        pub fn doAtom(self: *Bank, value: []const u8) *const Sexpr {
+        pub fn store(self: *Bank, s: Sexpr) *const Sexpr {
             const res = self.pool.create() catch @panic("OoM");
-            res.* = .{ .atom = .{ .value = value } };
+            res.* = s;
             return res;
         }
 
-        pub fn doPair(self: *Bank, left: *const Sexpr, right: *const Sexpr) *const Sexpr {
-            const res = self.pool.create() catch @panic("OoM");
-            res.* = .{ .pair = .{ .left = left, .right = right } };
-            return res;
+        // pub fn doAtom(self: *Bank, value: []const u8) *const Sexpr {
+        //     const res = self.pool.create() catch @panic("OoM");
+        //     res.* = .{ .atom = .{ .value = value } };
+        //     return res;
+        // }
+
+        pub fn doPair(self: *Bank, left: Sexpr, right: Sexpr) Sexpr {
+            return .{ .pair = .{
+                .left = self.store(left),
+                .right = self.store(right),
+            } };
         }
 
-        pub fn doRef(self: *Bank, ref: **const Sexpr) *const Sexpr {
-            const res = self.pool.create() catch @panic("OoM");
-            res.* = .{ .ref = ref };
-            return res;
-        }
+        // pub fn doRef(self: *Bank, ref: **const Sexpr) *const Sexpr {
+        //     const res = self.pool.create() catch @panic("OoM");
+        //     res.* = .{ .ref = ref };
+        //     return res;
+        // }
     };
 
     pub const builtin: struct {
-        nil: *const Sexpr = &.{ .atom = .{ .value = "nil" } },
-        _: *const Sexpr = &.{ .atom = .{ .value = "_" } },
-        @"#inert": *const Sexpr = &.{ .atom = .{ .value = "#inert" } },
-        true: *const Sexpr = &.{ .atom = .{ .value = "true" } },
-        false: *const Sexpr = &.{ .atom = .{ .value = "false" } },
+        nil: Sexpr = .{ .atom = .{ .value = "nil" } },
+        _: Sexpr = .{ .atom = .{ .value = "_" } },
+        @"#inert": Sexpr = .{ .atom = .{ .value = "#inert" } },
+        true: Sexpr = .{ .atom = .{ .value = "true" } },
+        false: Sexpr = .{ .atom = .{ .value = "false" } },
     } = .{};
 
-    pub fn equals(this: *const Sexpr, other: *const Sexpr) bool {
-        if (this == other) return true;
-        if (std.meta.activeTag(this.*) != std.meta.activeTag(other.*)) return false;
-        return switch (this.*) {
+    pub fn equals(this: Sexpr, other: Sexpr) bool {
+        if (std.meta.activeTag(this) != std.meta.activeTag(other)) return false;
+        return switch (this) {
             .atom => |this_atom| this_atom.equals(other.atom),
             .pair => |this_pair| this_pair.equals(other.pair),
             .ref => @panic("TODO"),
@@ -360,18 +366,18 @@ pub const Parser = struct {
         } else return false;
     }
 
-    pub fn next(self: *Parser, bank: *Sexpr.Bank) !?*const Sexpr {
+    pub fn next(self: *Parser, bank: *Sexpr.Bank) !?Sexpr {
         self.skipWhitespace();
         if (self.remaining_text.len == 0) {
             return null;
         } else if (self.eatCharIfPossible('(')) {
-            return self.parseSexprInsideParens(bank);
+            return try self.parseSexprInsideParens(bank);
         } else {
-            return self.parseAtom(bank);
+            return try self.parseAtom();
         }
     }
 
-    fn parseSexprInsideParens(self: *Parser, bank: *Sexpr.Bank) error{ OutOfMemory, UnexpectedEOF, NotFoundExpectedChar }!*const Sexpr {
+    fn parseSexprInsideParens(self: *Parser, bank: *Sexpr.Bank) error{ OutOfMemory, UnexpectedEOF, NotFoundExpectedChar }!Sexpr {
         self.skipWhitespace();
         if (self.eatCharIfPossible(')'))
             return Sexpr.builtin.nil;
@@ -385,25 +391,25 @@ pub const Parser = struct {
         return bank.doPair(first, rest);
     }
 
-    fn parseAtom(self: *Parser, bank: *Sexpr.Bank) !*const Sexpr {
+    fn parseAtom(self: *Parser) !Sexpr {
         self.skipWhitespace();
         const word_breaks = .{ '(', ')', ':', '.', ';' } ++ std.ascii.whitespace;
         const word_len = std.mem.indexOfAnyPos(u8, self.remaining_text, 0, &word_breaks) orelse self.remaining_text.len;
         const word = self.remaining_text[0..word_len];
         self.remaining_text = self.remaining_text[word_len..];
-        return bank.doAtom(word);
+        return .{ .atom = .{ .value = word } };
     }
 };
 
-fn assertPair(v: *const Sexpr) void {
+fn assertPair(v: Sexpr) void {
     if (!v.is(.pair)) panic("Expected a Pair, found \"{any}\"", .{v});
 }
 
-fn assertAtom(v: *const Sexpr) void {
+fn assertAtom(v: Sexpr) void {
     if (!v.is(.atom)) panic("Expected an Atom, found \"{any}\"", .{v});
 }
 
-fn assertEqual(a: *const Sexpr, b: *const Sexpr) void {
+fn assertEqual(a: Sexpr, b: Sexpr) void {
     if (!a.equals(b)) panic("Expected equality between\n\t{any}\nand\n\t{any}", .{ a, b });
 }
 
