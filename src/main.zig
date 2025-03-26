@@ -44,6 +44,13 @@ test "modify static parent env" {
     , "2");
 }
 
+test "$if" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! x 1)
+        \\ ($if true x y)
+    , "1");
+}
+
 pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
@@ -87,7 +94,16 @@ const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
                         .right = &.{ .atom = .{ .value = "cons" } },
                     } },
                 } },
-                .right = &Sexpr.builtin.nil,
+                .right = &.{ .pair = .{
+                    .left = &.{ .pair = .{
+                        .left = &.{ .atom = .{ .value = "$if" } },
+                        .right = &.{ .pair = .{
+                            .left = &.{ .atom = .{ .value = "builtin" } },
+                            .right = &.{ .atom = .{ .value = "$if" } },
+                        } },
+                    } },
+                    .right = &Sexpr.builtin.nil,
+                } },
             } },
         } },
     } },
@@ -150,6 +166,9 @@ fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
 
     // self evaluating symbols
     if (isNumber(key.atom.value)) return key;
+    for ([_][]const u8{ "true", "false" }) |word| {
+        if (key.equals(.{ .atom = .{ .value = word } })) return key;
+    }
 
     const local_bindings = env.ref.*.pair.left.*;
     const parent_envs = env.ref.*.pair.right.*;
@@ -222,6 +241,14 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
                 const left = eval(nth(argument, 0), env, bank);
                 const right = eval(nth(argument, 1), env, bank);
                 return bank.doPair(left, right);
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$if" } } } })) {
+                const condition = eval(nth(argument, 0), env, bank);
+                if (condition.equals(Sexpr.builtin.true)) {
+                    return eval(nth(argument, 1), env, bank);
+                } else {
+                    assertEqual(condition, Sexpr.builtin.false);
+                    return eval(nth(argument, 2), env, bank);
+                }
             } else if (operative.is(.pair) and operative.pair.left.equals(.{ .atom = .{ .value = "compiled_vau" } })) {
                 const static_env = operative.pair.right.pair.left.*;
                 const formal_tree = operative.pair.right.pair.right.pair.left.*;
