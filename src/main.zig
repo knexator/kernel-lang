@@ -5,6 +5,13 @@ const sample_vau_program =
     \\ (print (factorial 3))
 ;
 
+test "cons" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! a 10)
+        \\ (cons a a)
+    , "(10 . 10)");
+}
+
 test "$define!" {
     try testHelper(std.testing.allocator,
         // \\ ($define! ((a) . b) (cons (list 10) 11))
@@ -72,7 +79,16 @@ const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
                     .right = &.{ .atom = .{ .value = "$vau" } },
                 } },
             } },
-            .right = &Sexpr.builtin.nil,
+            .right = &.{ .pair = .{
+                .left = &.{ .pair = .{
+                    .left = &.{ .atom = .{ .value = "cons" } },
+                    .right = &.{ .pair = .{
+                        .left = &.{ .atom = .{ .value = "builtin" } },
+                        .right = &.{ .atom = .{ .value = "cons" } },
+                    } },
+                } },
+                .right = &Sexpr.builtin.nil,
+            } },
         } },
     } },
     .right = &Sexpr.builtin.nil,
@@ -101,7 +117,7 @@ pub fn main() !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
     var parser: Parser = .{ .remaining_text = 
-        \\ ($define! (a b) (cons 10 11))
+        \\ ($define! (a . b) (cons 10 11))
         \\ a
         \\ b
     };
@@ -116,6 +132,16 @@ pub fn main() !void {
 
 fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
     return bank.doRef(bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil)));
+}
+
+fn nth(l: Sexpr, index: usize) Sexpr {
+    assertPair(l);
+    var cur = l;
+    for (0..index) |_| {
+        cur = l.pair.right.*;
+        assertPair(cur);
+    }
+    return cur.pair.left.*;
 }
 
 fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
@@ -165,13 +191,13 @@ fn addToEnv(key: Sexpr, value: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void {
 fn bind(definiend: Sexpr, expression: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void {
     assertEnv(env);
     if (definiend.equals(Sexpr.builtin.nil)) {
-        assert(expression.equals(Sexpr.builtin.nil));
+        assertNil(expression);
     } else if (definiend.equals(Sexpr.builtin._)) {
         // nothing
     } else if (definiend.is(.atom)) {
         addToEnv(definiend, expression, env, bank);
     } else {
-        assert(expression.is(.pair));
+        assertPair(expression);
         bind(definiend.pair.left.*, expression.pair.left.*, env, bank);
         bind(definiend.pair.right.*, expression.pair.right.*, env, bank);
     }
@@ -192,6 +218,10 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
                 return Sexpr.builtin.@"#inert";
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
                 return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, pair.right.*));
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "cons" } } } })) {
+                const left = eval(nth(argument, 0), env, bank);
+                const right = eval(nth(argument, 1), env, bank);
+                return bank.doPair(left, right);
             } else if (operative.is(.pair) and operative.pair.left.equals(.{ .atom = .{ .value = "compiled_vau" } })) {
                 const static_env = operative.pair.right.pair.left.*;
                 const formal_tree = operative.pair.right.pair.right.pair.left.*;
@@ -424,6 +454,10 @@ fn assertRef(v: Sexpr) void {
     if (!v.is(.ref)) panic("Expected a Ref, found \"{any}\"", .{v});
 }
 
+fn assertNil(v: Sexpr) void {
+    assertEqual(v, Sexpr.builtin.nil);
+}
+
 fn assertEnv(env: Sexpr) void {
     assertRef(env);
     assertPair(env.ref.*);
@@ -433,7 +467,7 @@ fn assertEnv(env: Sexpr) void {
 
 fn assertList(v: Sexpr) void {
     if (v.is(.atom)) {
-        assertEqual(v, Sexpr.builtin.nil);
+        assertNil(v);
     } else {
         assertPair(v);
         assertList(v.pair.right.*);
