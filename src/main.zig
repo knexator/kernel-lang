@@ -5,17 +5,18 @@ const sample_vau_program =
 
 test "$define!" {
     try testHelper(std.testing.allocator,
-        \\ ($define! ((a) . b) ((10) . 11))
+        // \\ ($define! ((a) . b) (cons (list 10) 11))
+        \\ ($define! a 10)
         \\ a
     , "10");
 }
 
-// test "$vau" {
-//     try testHelper(std.testing.allocator,
-//         \\ ($define! foo ($vau (x y) _ x))
-//         \\ (foo a b)
-//     , "a");
-// }
+test "$vau" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! foo ($vau (x y) _ x))
+        \\ (foo a b)
+    , "a");
+}
 
 pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
     var bank = Sexpr.Bank.init(gpa);
@@ -36,20 +37,25 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
 }
 
 const ground_environment: *const Sexpr = &.{ .pair = .{
-    .left = &.{
-        .pair = .{
-            .left = &.{
-                .pair = .{
-                    .left = &.{ .atom = .{ .value = "$define!" } },
-                    .right = &.{ .pair = .{
-                        .left = &.{ .atom = .{ .value = "builtin" } },
-                        .right = &.{ .atom = .{ .value = "$define!" } },
-                    } },
-                },
-            },
+    .left = &.{ .pair = .{
+        .left = &.{ .pair = .{
+            .left = &.{ .atom = .{ .value = "$define!" } },
+            .right = &.{ .pair = .{
+                .left = &.{ .atom = .{ .value = "builtin" } },
+                .right = &.{ .atom = .{ .value = "$define!" } },
+            } },
+        } },
+        .right = &.{ .pair = .{
+            .left = &.{ .pair = .{
+                .left = &.{ .atom = .{ .value = "$vau" } },
+                .right = &.{ .pair = .{
+                    .left = &.{ .atom = .{ .value = "builtin" } },
+                    .right = &.{ .atom = .{ .value = "$vau" } },
+                } },
+            } },
             .right = Sexpr.builtin.nil,
-        },
-    },
+        } },
+    } },
     .right = Sexpr.builtin.nil,
 } };
 
@@ -76,7 +82,7 @@ pub fn main() !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
     var parser: Parser = .{ .remaining_text = 
-        \\ ($define! (a b) (10 11))
+        \\ ($define! (a b) (cons 10 11))
         \\ a
         \\ b
     };
@@ -154,16 +160,31 @@ fn bind(definiend: *const Sexpr, expression: *const Sexpr, env: **const Sexpr, b
 
 fn eval(expr: *const Sexpr, env: **const Sexpr, bank: *Sexpr.Bank) *const Sexpr {
     switch (expr.*) {
-        .atom => return lookup(expr, env.*) orelse std.debug.panic("unbound variable: {any}", .{expr}),
+        .ref => panic("Don't know how to eval a ref", .{}),
+        .atom => return lookup(expr, env.*) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
             const operative = eval(pair.left, env, bank);
+            const argument = pair.right;
             if (operative.equals(&.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
-                bind(pair.right.pair.left, pair.right.pair.right.pair.left, env, bank);
+                const formal_tree = argument.pair.left;
+                const value = eval(argument.pair.right.pair.left, env, bank);
+                bind(formal_tree, value, env, bank);
                 return Sexpr.builtin.@"#inert";
-                // } else if (pair.left.equals(&.{ .atom = .{ .value = "$vau" } })) {
-                //     unreachable;
+            } else if (operative.equals(&.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
+                return bank.doPair(bank.doAtom("compiled_vau"), bank.doPair(bank.doRef(env), pair.right));
+            } else if (operative.is(.pair) and operative.pair.left.equals(&.{ .atom = .{ .value = "compiled_vau" } })) {
+                const static_env = operative.pair.right.pair.left;
+                const formal_tree = operative.pair.right.pair.right.pair.left;
+                const dynamic_env_name = operative.pair.right.pair.right.pair.right.pair.left;
+                const body_expr = operative.pair.right.pair.right.pair.right.pair.right.pair.left;
+
+                var temp_env = bank.doPair(Sexpr.builtin.nil, static_env);
+                bind(formal_tree, argument, &temp_env, bank);
+                // TODO: bind dynamic_env_name to **env
+                _ = dynamic_env_name;
+                return eval(body_expr, &temp_env, bank);
             } else {
-                unreachable;
+                panic("Bad operative: \"{any}\"", .{operative});
             }
         },
     }
@@ -187,6 +208,7 @@ pub const Pair = struct {
 pub const Sexpr = union(enum) {
     atom: Atom,
     pair: Pair,
+    ref: **const Sexpr,
 
     pub const Address = struct {
         value: []const Item,
@@ -207,7 +229,7 @@ pub const Sexpr = union(enum) {
             self.pool.deinit();
         }
 
-        pub fn doAtom(self: *Bank, value: []const u8) !*const Sexpr {
+        pub fn doAtom(self: *Bank, value: []const u8) *const Sexpr {
             const res = self.pool.create() catch @panic("OoM");
             res.* = .{ .atom = .{ .value = value } };
             return res;
@@ -216,6 +238,12 @@ pub const Sexpr = union(enum) {
         pub fn doPair(self: *Bank, left: *const Sexpr, right: *const Sexpr) *const Sexpr {
             const res = self.pool.create() catch @panic("OoM");
             res.* = .{ .pair = .{ .left = left, .right = right } };
+            return res;
+        }
+
+        pub fn doRef(self: *Bank, ref: **const Sexpr) *const Sexpr {
+            const res = self.pool.create() catch @panic("OoM");
+            res.* = .{ .ref = ref };
             return res;
         }
     };
@@ -234,6 +262,7 @@ pub const Sexpr = union(enum) {
         return switch (this.*) {
             .atom => |this_atom| this_atom.equals(other.atom),
             .pair => |this_pair| this_pair.equals(other.pair),
+            .ref => @panic("TODO"),
         };
     }
 
@@ -283,6 +312,7 @@ pub const Sexpr = union(enum) {
         assert(std.mem.eql(u8, fmt, ""));
         assert(std.meta.eql(options, .{}));
         switch (value.*) {
+            .ref => @panic("TODO"),
             .atom => |a| try writer.writeAll(a.value),
             .pair => |p| {
                 try writer.writeAll("(");
