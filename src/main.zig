@@ -1,3 +1,5 @@
+//! Env = ref to: ( list_of_local_bindings . list_of_parent_envs )
+
 const sample_vau_program =
     \\ ($define! factorial ($lambda (n) ($if (=? n 0) 1 (* n (factorial (- n 1))))))
     \\ (print (factorial 3))
@@ -18,6 +20,23 @@ test "$vau" {
     , "a");
 }
 
+test "static parent env" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! x 1)
+        \\ ($define! foo ($vau () _ x))
+        \\ (foo)
+    , "1");
+}
+
+test "modify static parent env" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! x 1)
+        \\ ($define! foo ($vau () _ x))
+        \\ ($define! x 2)
+        \\ (foo)
+    , "2");
+}
+
 pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
@@ -28,15 +47,15 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
         break :blk result;
     };
     var parser: Parser = .{ .remaining_text = source };
-    var env = makeKernelStandardEnvironment(&bank);
+    const env = makeKernelStandardEnvironment(&bank);
     var last_value = Sexpr.builtin.@"#inert";
     while (parser.next(&bank) catch @panic("bad text")) |v| {
-        last_value = eval(v, &env, &bank);
+        last_value = eval(v, env, &bank);
     }
     try std.testing.expect(last_value.equals(expected));
 }
 
-const ground_environment: Sexpr = .{ .pair = .{
+const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
     .left = &.{ .pair = .{
         .left = &.{ .pair = .{
             .left = &.{ .atom = .{ .value = "$define!" } },
@@ -57,7 +76,7 @@ const ground_environment: Sexpr = .{ .pair = .{
         } },
     } },
     .right = &Sexpr.builtin.nil,
-} };
+} }) };
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -87,27 +106,27 @@ pub fn main() !void {
         \\ b
     };
 
-    var env = makeKernelStandardEnvironment(&bank);
+    const env = makeKernelStandardEnvironment(&bank);
 
     while (try parser.next(&bank)) |v| {
         try stdout.print("read: {any}\n", .{v});
-        try stdout.print("eval'd: {any}\n", .{eval(v, &env, &bank)});
+        try stdout.print("eval'd: {any}\n", .{eval(v, env, &bank)});
     }
 }
 
 fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
-    return bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil));
+    return bank.doRef(bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil)));
 }
 
 fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
-    assert(key.is(.atom));
-    assert(env.is(.pair));
+    assertAtom(key);
+    assertEnv(env);
 
     // self evaluating symbols
     if (isNumber(key.atom.value)) return key;
 
-    const local_bindings = env.pair.left.*;
-    const parent_envs = env.pair.right.*;
+    const local_bindings = env.ref.*.pair.left.*;
+    const parent_envs = env.ref.*.pair.right.*;
 
     var remaining_bindings = local_bindings;
     while (remaining_bindings.is(.pair)) {
@@ -129,22 +148,22 @@ fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
             return result;
         }
     }
-    assert(remaining_parent_envs.equals(Sexpr.builtin.nil));
+    assertEqual(remaining_parent_envs, Sexpr.builtin.nil);
 
     return null;
 }
 
-fn addToEnv(key: Sexpr, value: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) void {
-    assertPair(env.*);
-    const local_bindings = env.*.pair.left.*;
-    const parent_envs = env.*.pair.right.*;
-    env.* = bank.doPair(
+fn addToEnv(key: Sexpr, value: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void {
+    const local_bindings = env.ref.*.pair.left.*;
+    const parent_envs = env.ref.*.pair.right.*;
+    env.ref.* = bank.doPair(
         bank.doPair(bank.doPair(key, value), local_bindings),
         parent_envs,
     );
 }
 
-fn bind(definiend: Sexpr, expression: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) void {
+fn bind(definiend: Sexpr, expression: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void {
+    assertEnv(env);
     if (definiend.equals(Sexpr.builtin.nil)) {
         assert(expression.equals(Sexpr.builtin.nil));
     } else if (definiend.equals(Sexpr.builtin._)) {
@@ -158,10 +177,11 @@ fn bind(definiend: Sexpr, expression: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) voi
     }
 }
 
-fn eval(expr: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) Sexpr {
+fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+    assertEnv(env);
     switch (expr) {
         .ref => panic("Don't know how to eval a ref", .{}),
-        .atom => return lookup(expr, env.*) orelse panic("unbound variable: {any}", .{expr}),
+        .atom => return lookup(expr, env) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
             const operative = eval(pair.left.*, env, bank);
             const argument = pair.right.*;
@@ -171,18 +191,17 @@ fn eval(expr: Sexpr, env: *Sexpr, bank: *Sexpr.Bank) Sexpr {
                 bind(formal_tree, value, env, bank);
                 return Sexpr.builtin.@"#inert";
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
-                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(.{ .ref = env }, pair.right.*));
+                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, pair.right.*));
             } else if (operative.is(.pair) and operative.pair.left.equals(.{ .atom = .{ .value = "compiled_vau" } })) {
                 const static_env = operative.pair.right.pair.left.*;
                 const formal_tree = operative.pair.right.pair.right.pair.left.*;
                 const dynamic_env_name = operative.pair.right.pair.right.pair.right.pair.left.*;
                 const body_expr = operative.pair.right.pair.right.pair.right.pair.right.pair.left.*;
 
-                var temp_env = bank.doPair(Sexpr.builtin.nil, static_env);
-                bind(formal_tree, argument, &temp_env, bank);
-                // TODO: bind dynamic_env_name to **env
-                _ = dynamic_env_name;
-                return eval(body_expr, &temp_env, bank);
+                var temp_env = bank.doPair(Sexpr.builtin.nil, bank.doPair(static_env, Sexpr.builtin.nil));
+                bind(formal_tree, argument, .{ .ref = &temp_env }, bank);
+                bind(dynamic_env_name, env, .{ .ref = &temp_env }, bank);
+                return eval(body_expr, .{ .ref = &temp_env }, bank);
             } else {
                 panic("Bad operative: \"{any}\"", .{operative});
             }
@@ -229,17 +248,11 @@ pub const Sexpr = union(enum) {
             self.pool.deinit();
         }
 
-        pub fn store(self: *Bank, s: Sexpr) *const Sexpr {
+        pub fn store(self: *Bank, s: Sexpr) *Sexpr {
             const res = self.pool.create() catch @panic("OoM");
             res.* = s;
             return res;
         }
-
-        // pub fn doAtom(self: *Bank, value: []const u8) *const Sexpr {
-        //     const res = self.pool.create() catch @panic("OoM");
-        //     res.* = .{ .atom = .{ .value = value } };
-        //     return res;
-        // }
 
         pub fn doPair(self: *Bank, left: Sexpr, right: Sexpr) Sexpr {
             return .{ .pair = .{
@@ -248,11 +261,9 @@ pub const Sexpr = union(enum) {
             } };
         }
 
-        // pub fn doRef(self: *Bank, ref: **const Sexpr) *const Sexpr {
-        //     const res = self.pool.create() catch @panic("OoM");
-        //     res.* = .{ .ref = ref };
-        //     return res;
-        // }
+        pub fn doRef(self: *Bank, v: Sexpr) Sexpr {
+            return .{ .ref = self.store(v) };
+        }
     };
 
     pub const builtin: struct {
@@ -318,7 +329,7 @@ pub const Sexpr = union(enum) {
         assert(std.mem.eql(u8, fmt, ""));
         assert(std.meta.eql(options, .{}));
         switch (value.*) {
-            .ref => @panic("TODO"),
+            .ref => |ref| try writer.print("<{any}>", .{ref.*}), // TODO: avoid printing cyclic values
             .atom => |a| try writer.writeAll(a.value),
             .pair => |p| {
                 try writer.writeAll("(");
@@ -407,6 +418,26 @@ fn assertPair(v: Sexpr) void {
 
 fn assertAtom(v: Sexpr) void {
     if (!v.is(.atom)) panic("Expected an Atom, found \"{any}\"", .{v});
+}
+
+fn assertRef(v: Sexpr) void {
+    if (!v.is(.ref)) panic("Expected a Ref, found \"{any}\"", .{v});
+}
+
+fn assertEnv(env: Sexpr) void {
+    assertRef(env);
+    assertPair(env.ref.*);
+    assertList(env.ref.*.pair.left.*);
+    assertList(env.ref.*.pair.right.*);
+}
+
+fn assertList(v: Sexpr) void {
+    if (v.is(.atom)) {
+        assertEqual(v, Sexpr.builtin.nil);
+    } else {
+        assertPair(v);
+        assertList(v.pair.right.*);
+    }
 }
 
 fn assertEqual(a: Sexpr, b: Sexpr) void {
