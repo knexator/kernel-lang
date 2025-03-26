@@ -51,6 +51,16 @@ test "$if" {
     , "1");
 }
 
+test "=?" {
+    try testHelper(std.testing.allocator,
+        \\ (=? 1 2)
+    , "false");
+
+    try testHelper(std.testing.allocator,
+        \\ (=? (cons 1 2) (cons 1 2))
+    , "true");
+}
+
 pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
@@ -102,7 +112,16 @@ const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
                             .right = &.{ .atom = .{ .value = "$if" } },
                         } },
                     } },
-                    .right = &Sexpr.builtin.nil,
+                    .right = &.{ .pair = .{
+                        .left = &.{ .pair = .{
+                            .left = &.{ .atom = .{ .value = "=?" } },
+                            .right = &.{ .pair = .{
+                                .left = &.{ .atom = .{ .value = "builtin" } },
+                                .right = &.{ .atom = .{ .value = "=?" } },
+                            } },
+                        } },
+                        .right = &Sexpr.builtin.nil,
+                    } },
                 } },
             } },
         } },
@@ -166,7 +185,7 @@ fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
 
     // self evaluating symbols
     if (isNumber(key.atom.value)) return key;
-    for ([_][]const u8{ "true", "false" }) |word| {
+    for ([_][]const u8{ "true", "false", "nil" }) |word| {
         if (key.equals(.{ .atom = .{ .value = word } })) return key;
     }
 
@@ -249,6 +268,10 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
                     assertEqual(condition, Sexpr.builtin.false);
                     return eval(nth(argument, 2), env, bank);
                 }
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "=?" } } } })) {
+                const left = eval(nth(argument, 0), env, bank);
+                const right = eval(nth(argument, 1), env, bank);
+                return if (left.equals(right)) Sexpr.builtin.true else Sexpr.builtin.false;
             } else if (operative.is(.pair) and operative.pair.left.equals(.{ .atom = .{ .value = "compiled_vau" } })) {
                 const static_env = operative.pair.right.pair.left.*;
                 const formal_tree = operative.pair.right.pair.right.pair.left.*;
@@ -336,7 +359,7 @@ pub const Sexpr = union(enum) {
         return switch (this) {
             .atom => |this_atom| this_atom.equals(other.atom),
             .pair => |this_pair| this_pair.equals(other.pair),
-            .ref => @panic("TODO"),
+            .ref => |this_ref| this_ref == other.ref,
         };
     }
 
