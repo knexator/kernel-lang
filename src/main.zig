@@ -5,6 +5,16 @@ const sample_vau_program =
     \\ (print (factorial 3))
 ;
 
+test "caaddadr" {
+    var bank = Sexpr.Bank.init(std.testing.allocator);
+    defer bank.deinit();
+    const v = try parseSingle(&bank, "(a . (b . ((c1 . c2) . d)))");
+    try std.testing.expect(v.at(.l).equals(atom("a")));
+    try std.testing.expect(v.at(.rl).equals(atom("b")));
+    try std.testing.expect(v.at(.rrl).equals(bank.doPair(atom("c1"), atom("c2"))));
+    try std.testing.expect(v.at(.rrr).equals(atom("d")));
+}
+
 test "cons" {
     try testHelper(std.testing.allocator,
         \\ ($define! a 10)
@@ -77,6 +87,17 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
         last_value = eval(v, env, &bank);
     }
     try std.testing.expect(last_value.equals(expected));
+}
+
+fn atom(v: []const u8) Sexpr {
+    return .{ .atom = .{ .value = v } };
+}
+
+fn parseSingle(bank: *Sexpr.Bank, source: []const u8) !Sexpr {
+    var parser: Parser = .{ .remaining_text = source };
+    const result = (try parser.next(bank)).?;
+    assert(try parser.next(bank) == null);
+    return result;
 }
 
 const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
@@ -170,13 +191,7 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
 }
 
 fn nth(l: Sexpr, index: usize) Sexpr {
-    assertPair(l);
-    var cur = l;
-    for (0..index) |_| {
-        cur = l.pair.right.*;
-        assertPair(cur);
-    }
-    return cur.pair.left.*;
+    return l.nth(index);
 }
 
 fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
@@ -218,8 +233,8 @@ fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
 }
 
 fn addToEnv(key: Sexpr, value: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void {
-    const local_bindings = env.ref.*.pair.left.*;
-    const parent_envs = env.ref.*.pair.right.*;
+    const local_bindings = env.at(._l);
+    const parent_envs = env.at(._r);
     env.ref.* = bank.doPair(
         bank.doPair(bank.doPair(key, value), local_bindings),
         parent_envs,
@@ -236,8 +251,8 @@ fn bind(definiend: Sexpr, expression: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void
         addToEnv(definiend, expression, env, bank);
     } else {
         assertPair(expression);
-        bind(definiend.pair.left.*, expression.pair.left.*, env, bank);
-        bind(definiend.pair.right.*, expression.pair.right.*, env, bank);
+        bind(definiend.at(.l), expression.at(.l), env, bank);
+        bind(definiend.at(.r), expression.at(.r), env, bank);
     }
 }
 
@@ -250,33 +265,33 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
             const operative = eval(pair.left.*, env, bank);
             const argument = pair.right.*;
             if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
-                const formal_tree = argument.pair.left.*;
-                const value = eval(argument.pair.right.pair.left.*, env, bank);
+                const formal_tree = argument.nth(0);
+                const value = eval(argument.nth(1), env, bank);
                 bind(formal_tree, value, env, bank);
                 return Sexpr.builtin.@"#inert";
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
-                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, pair.right.*));
+                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, argument));
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "cons" } } } })) {
-                const left = eval(nth(argument, 0), env, bank);
-                const right = eval(nth(argument, 1), env, bank);
+                const left = eval(argument.nth(0), env, bank);
+                const right = eval(argument.nth(1), env, bank);
                 return bank.doPair(left, right);
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$if" } } } })) {
-                const condition = eval(nth(argument, 0), env, bank);
+                const condition = eval(argument.nth(0), env, bank);
                 if (condition.equals(Sexpr.builtin.true)) {
-                    return eval(nth(argument, 1), env, bank);
+                    return eval(argument.nth(1), env, bank);
                 } else {
                     assertEqual(condition, Sexpr.builtin.false);
-                    return eval(nth(argument, 2), env, bank);
+                    return eval(argument.nth(2), env, bank);
                 }
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "=?" } } } })) {
-                const left = eval(nth(argument, 0), env, bank);
-                const right = eval(nth(argument, 1), env, bank);
+                const left = eval(argument.nth(0), env, bank);
+                const right = eval(argument.nth(1), env, bank);
                 return if (left.equals(right)) Sexpr.builtin.true else Sexpr.builtin.false;
-            } else if (operative.is(.pair) and operative.pair.left.equals(.{ .atom = .{ .value = "compiled_vau" } })) {
-                const static_env = operative.pair.right.pair.left.*;
-                const formal_tree = operative.pair.right.pair.right.pair.left.*;
-                const dynamic_env_name = operative.pair.right.pair.right.pair.right.pair.left.*;
-                const body_expr = operative.pair.right.pair.right.pair.right.pair.right.pair.left.*;
+            } else if (operative.is(.pair) and operative.nth(0).equals(.{ .atom = .{ .value = "compiled_vau" } })) {
+                const static_env = operative.nth(1);
+                const formal_tree = operative.at(.rrl);
+                const dynamic_env_name = operative.at(.rrrl);
+                const body_expr = operative.at(.rrrrl);
 
                 var temp_env = bank.doPair(Sexpr.builtin.nil, bank.doPair(static_env, Sexpr.builtin.nil));
                 bind(formal_tree, argument, .{ .ref = &temp_env }, bank);
@@ -365,6 +380,29 @@ pub const Sexpr = union(enum) {
 
     pub fn is(this: *const Sexpr, kind: std.meta.FieldEnum(Sexpr)) bool {
         return std.meta.activeTag(this.*) == kind;
+    }
+
+    pub fn at(v: Sexpr, comptime address: @Type(.enum_literal)) Sexpr {
+        var res = v;
+        inline for (@tagName(address)) |item| {
+            res = switch (item) {
+                'l' => res.pair.left.*,
+                'r' => res.pair.right.*,
+                '_' => res.ref.*,
+                else => @compileError(std.fmt.comptimePrint("bad address item: {s}", .{item})),
+            };
+        }
+        return res;
+    }
+
+    pub fn nth(l: Sexpr, index: usize) Sexpr {
+        assertPair(l);
+        var cur = l;
+        for (0..index) |_| {
+            cur = l.pair.right.*;
+            assertPair(cur);
+        }
+        return cur.pair.left.*;
     }
 
     pub fn getAt(this: *const Sexpr, address: Address) ?*const Sexpr {
