@@ -85,6 +85,13 @@ test "wrap" {
     , "1");
 }
 
+test "eval" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! get-current-environment (wrap ($vau () e e)))
+        \\ (eval ($quote (cons 1 2)) (get-current-environment))
+    , "(1 . 2)");
+}
+
 // test "car" {
 //     try testHelper(std.testing.allocator,
 //         \\ ($define! $car ($vau (a . b) _ a))
@@ -132,6 +139,7 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
     while (parser.next(&bank) catch @panic("bad text")) |v| {
         last_value = eval(v, env, &bank);
     }
+    errdefer std.log.err("Expected\n\t{any}\nFound\n\t{any}\n", .{ expected, last_value });
     try std.testing.expect(last_value.equals(expected));
 }
 
@@ -203,7 +211,16 @@ const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
                                         .right = &.{ .atom = .{ .value = "$quote" } },
                                     } },
                                 } },
-                                .right = &Sexpr.builtin.nil,
+                                .right = &.{ .pair = .{
+                                    .left = &.{ .pair = .{
+                                        .left = &.{ .atom = .{ .value = "eval" } },
+                                        .right = &.{ .pair = .{
+                                            .left = &.{ .atom = .{ .value = "builtin" } },
+                                            .right = &.{ .atom = .{ .value = "eval" } },
+                                        } },
+                                    } },
+                                    .right = &Sexpr.builtin.nil,
+                                } },
                             } },
                         } },
                     } },
@@ -357,6 +374,12 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
                 const vau = eval(arguments.nth(0), env, bank);
                 assertEqual(vau.at(.l), atom("compiled_vau"));
                 return bank.doPair(atom("wrapped_vau"), vau);
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "eval" } } } })) {
+                return eval(
+                    eval(arguments.nth(0), env, bank),
+                    eval(arguments.nth(1), env, bank),
+                    bank,
+                );
             } else if (operative.is(.pair) and operative.at(.l).equals(.{ .atom = .{ .value = "compiled_vau" } })) {
                 const static_env = operative.at(.rl);
                 const formal_tree = operative.at(.rrl);
