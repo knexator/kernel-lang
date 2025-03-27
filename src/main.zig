@@ -71,6 +71,52 @@ test "=?" {
     , "true");
 }
 
+test "$car" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! $car ($vau ((a . b)) _ a))
+        \\ ($car (1 . 2))
+    , "1");
+}
+
+test "wrap" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! car (wrap ($vau ((a . b)) _ a)))
+        \\ (car (cons 1 2))
+    , "1");
+}
+
+// test "car" {
+//     try testHelper(std.testing.allocator,
+//         \\ ($define! $car ($vau (a . b) _ a))
+//         \\ ($define! car ($vau (x) env (eval (cons $car (eval x env)) env))
+//         \\ (car (cons 1 2))
+//     , "1");
+// }
+
+// test "list" {
+//     try testHelper(std.testing.allocator,
+//         \\ ($define! list ($vau args env
+//         \\     ($match args
+//         \\         (#nil        nil)
+//         // \\      ((@h . @t)   (cons (eval h env) (combine list t env)))
+//         \\         ((@h . @t)   (cons (eval h env) (eval (cons list t) env)))
+//         \\ )))
+//         \\ ($define! x 1)
+//         \\ (list x x)
+//     , "(1 1)");
+// }
+
+// test "list" {
+//     try testHelper(std.testing.allocator,
+//         \\ ($define! list ($vau args env
+//         \\     ($if (=? args nil)
+//         \\         nil
+//         \\         (cons (car args) (list (cdr args))))))
+//         \\ ($define! x 1)
+//         \\ (list x x)
+//     , "(1 1)");
+// }
+
 pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []const u8) !void {
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
@@ -141,7 +187,25 @@ const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
                                 .right = &.{ .atom = .{ .value = "=?" } },
                             } },
                         } },
-                        .right = &Sexpr.builtin.nil,
+                        .right = &.{ .pair = .{
+                            .left = &.{ .pair = .{
+                                .left = &.{ .atom = .{ .value = "wrap" } },
+                                .right = &.{ .pair = .{
+                                    .left = &.{ .atom = .{ .value = "builtin" } },
+                                    .right = &.{ .atom = .{ .value = "wrap" } },
+                                } },
+                            } },
+                            .right = &.{ .pair = .{
+                                .left = &.{ .pair = .{
+                                    .left = &.{ .atom = .{ .value = "$quote" } },
+                                    .right = &.{ .pair = .{
+                                        .left = &.{ .atom = .{ .value = "builtin" } },
+                                        .right = &.{ .atom = .{ .value = "$quote" } },
+                                    } },
+                                } },
+                                .right = &Sexpr.builtin.nil,
+                            } },
+                        } },
                     } },
                 } },
             } },
@@ -263,44 +327,66 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
         .atom => return lookup(expr, env) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
             const operative = eval(pair.left.*, env, bank);
-            const argument = pair.right.*;
+            const arguments = pair.right.*;
             if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
-                const formal_tree = argument.nth(0);
-                const value = eval(argument.nth(1), env, bank);
+                const formal_tree = arguments.nth(0);
+                const value = eval(arguments.nth(1), env, bank);
                 bind(formal_tree, value, env, bank);
                 return Sexpr.builtin.@"#inert";
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
-                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, argument));
+                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, arguments));
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "cons" } } } })) {
-                const left = eval(argument.nth(0), env, bank);
-                const right = eval(argument.nth(1), env, bank);
+                const left = eval(arguments.nth(0), env, bank);
+                const right = eval(arguments.nth(1), env, bank);
                 return bank.doPair(left, right);
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$if" } } } })) {
-                const condition = eval(argument.nth(0), env, bank);
+                const condition = eval(arguments.nth(0), env, bank);
                 if (condition.equals(Sexpr.builtin.true)) {
-                    return eval(argument.nth(1), env, bank);
+                    return eval(arguments.nth(1), env, bank);
                 } else {
                     assertEqual(condition, Sexpr.builtin.false);
-                    return eval(argument.nth(2), env, bank);
+                    return eval(arguments.nth(2), env, bank);
                 }
             } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "=?" } } } })) {
-                const left = eval(argument.nth(0), env, bank);
-                const right = eval(argument.nth(1), env, bank);
+                const left = eval(arguments.nth(0), env, bank);
+                const right = eval(arguments.nth(1), env, bank);
                 return if (left.equals(right)) Sexpr.builtin.true else Sexpr.builtin.false;
-            } else if (operative.is(.pair) and operative.nth(0).equals(.{ .atom = .{ .value = "compiled_vau" } })) {
-                const static_env = operative.nth(1);
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$quote" } } } })) {
+                return arguments.nth(0);
+            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "wrap" } } } })) {
+                const vau = eval(arguments.nth(0), env, bank);
+                assertEqual(vau.at(.l), atom("compiled_vau"));
+                return bank.doPair(atom("wrapped_vau"), vau);
+            } else if (operative.is(.pair) and operative.at(.l).equals(.{ .atom = .{ .value = "compiled_vau" } })) {
+                const static_env = operative.at(.rl);
                 const formal_tree = operative.at(.rrl);
                 const dynamic_env_name = operative.at(.rrrl);
                 const body_expr = operative.at(.rrrrl);
 
                 var temp_env = bank.doPair(Sexpr.builtin.nil, bank.doPair(static_env, Sexpr.builtin.nil));
-                bind(formal_tree, argument, .{ .ref = &temp_env }, bank);
+                bind(formal_tree, arguments, .{ .ref = &temp_env }, bank);
                 bind(dynamic_env_name, env, .{ .ref = &temp_env }, bank);
                 return eval(body_expr, .{ .ref = &temp_env }, bank);
+            } else if (operative.is(.pair) and operative.at(.l).equals(.{ .atom = .{ .value = "wrapped_vau" } })) {
+                const vau = operative.at(.r);
+                const evaluated_arguments = evaluateEachArgument(arguments, env, bank);
+                return eval(bank.doPair(bank.doPair(atom("$quote"), bank.doPair(vau, Sexpr.builtin.nil)), evaluated_arguments), env, bank);
             } else {
                 panic("Bad operative: \"{any}\"", .{operative});
             }
         },
+    }
+}
+
+fn evaluateEachArgument(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+    assertList(arguments);
+    if (arguments.equals(Sexpr.builtin.nil)) {
+        return Sexpr.builtin.nil;
+    } else {
+        return bank.doPair(
+            eval(arguments.at(.l), env, bank),
+            evaluateEachArgument(arguments.at(.r), env, bank),
+        );
     }
 }
 
@@ -447,7 +533,8 @@ pub const Sexpr = union(enum) {
         assert(std.mem.eql(u8, fmt, ""));
         assert(std.meta.eql(options, .{}));
         switch (value.*) {
-            .ref => |ref| try writer.print("<{any}>", .{ref.*}), // TODO: avoid printing cyclic values
+            .ref => try writer.print("<ref>", .{}), // TODO: print some value
+            // .ref => |ref| try writer.print("<{any}>", .{ref.*}), // TODO: avoid printing cyclic values
             .atom => |a| try writer.writeAll(a.value),
             .pair => |p| {
                 try writer.writeAll("(");
