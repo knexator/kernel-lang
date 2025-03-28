@@ -249,21 +249,25 @@ pub fn main() !void {
     const stdout = bw.writer();
     defer bw.flush() catch std.log.err("Failed to flush stdout", .{});
 
-    // TODO: REPL
+    const stdin = std.io.getStdIn().reader();
 
     var bank = Sexpr.Bank.init(gpa);
     defer bank.deinit();
-    var parser: Parser = .{ .remaining_text = 
-        \\ ($define! (a . b) (cons 10 11))
-        \\ a
-        \\ b
-    };
-
+    var strings_bank: std.heap.ArenaAllocator = .init(gpa);
+    defer strings_bank.deinit();
     const env = makeKernelStandardEnvironment(&bank);
 
-    while (try parser.next(&bank)) |v| {
-        try stdout.print("read: {any}\n", .{v});
-        try stdout.print("eval'd: {any}\n", .{eval(v, env, &bank)});
+    // TODO: this should be (loop (print (eval (read) env))), rather than a special case
+    try stdout.print("> ", .{});
+    try bw.flush();
+    while (try stdin.readUntilDelimiterOrEofAlloc(strings_bank.allocator(), '\n', std.math.maxInt(usize))) |line| {
+        var parser: Parser = .{ .remaining_text = line };
+        while (try parser.next(&bank)) |v| {
+            try stdout.print("read: {any}\n", .{v});
+            try stdout.print("eval'd: {any}\n", .{eval(v, env, &bank)});
+        }
+        try stdout.print("> ", .{});
+        try bw.flush();
     }
 }
 
