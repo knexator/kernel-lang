@@ -226,83 +226,6 @@ const Builtin = struct {
     }
 };
 
-const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
-    .left = &.{ .pair = .{
-        .left = &.{ .pair = .{
-            .left = &.{ .atom = .{ .value = "$define!" } },
-            .right = &.{ .pair = .{
-                .left = &.{ .atom = .{ .value = "builtin" } },
-                .right = &.{ .atom = .{ .value = "$define!" } },
-            } },
-        } },
-        .right = &.{ .pair = .{
-            .left = &.{ .pair = .{
-                .left = &.{ .atom = .{ .value = "$vau" } },
-                .right = &.{ .pair = .{
-                    .left = &.{ .atom = .{ .value = "builtin" } },
-                    .right = &.{ .atom = .{ .value = "$vau" } },
-                } },
-            } },
-            .right = &.{ .pair = .{
-                .left = &.{ .pair = .{
-                    .left = &.{ .atom = .{ .value = "cons" } },
-                    .right = &.{ .pair = .{
-                        .left = &.{ .atom = .{ .value = "builtin" } },
-                        .right = &.{ .atom = .{ .value = "cons" } },
-                    } },
-                } },
-                .right = &.{ .pair = .{
-                    .left = &.{ .pair = .{
-                        .left = &.{ .atom = .{ .value = "$if" } },
-                        .right = &.{ .pair = .{
-                            .left = &.{ .atom = .{ .value = "builtin" } },
-                            .right = &.{ .atom = .{ .value = "$if" } },
-                        } },
-                    } },
-                    .right = &.{ .pair = .{
-                        .left = &.{ .pair = .{
-                            .left = &.{ .atom = .{ .value = "=?" } },
-                            .right = &.{ .pair = .{
-                                .left = &.{ .atom = .{ .value = "builtin" } },
-                                .right = &.{ .atom = .{ .value = "=?" } },
-                            } },
-                        } },
-                        .right = &.{ .pair = .{
-                            .left = &.{ .pair = .{
-                                .left = &.{ .atom = .{ .value = "wrap" } },
-                                .right = &.{ .pair = .{
-                                    .left = &.{ .atom = .{ .value = "builtin" } },
-                                    .right = &.{ .atom = .{ .value = "wrap" } },
-                                } },
-                            } },
-                            .right = &.{ .pair = .{
-                                .left = &.{ .pair = .{
-                                    .left = &.{ .atom = .{ .value = "$quote" } },
-                                    .right = &.{ .pair = .{
-                                        .left = &.{ .atom = .{ .value = "builtin" } },
-                                        .right = &.{ .atom = .{ .value = "$quote" } },
-                                    } },
-                                } },
-                                .right = &.{ .pair = .{
-                                    .left = &.{ .pair = .{
-                                        .left = &.{ .atom = .{ .value = "eval" } },
-                                        .right = &.{ .pair = .{
-                                            .left = &.{ .atom = .{ .value = "builtin" } },
-                                            .right = &.{ .atom = .{ .value = "eval" } },
-                                        } },
-                                    } },
-                                    .right = &Sexpr.builtin.nil,
-                                } },
-                            } },
-                        } },
-                    } },
-                } },
-            } },
-        } },
-    } },
-    .right = &Sexpr.builtin.nil,
-} }) };
-
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const is_debug = gpa: {
@@ -344,6 +267,22 @@ pub fn main() !void {
 }
 
 fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
+    // TODO: do this at comptime, or at least cache it
+    var ground_environment_definitions = Sexpr.builtin.nil;
+    inline for (@typeInfo(Builtin).@"struct".decls) |decl| {
+        const name = decl.name;
+        ground_environment_definitions = bank.doPair(
+            bank.doPair(
+                atom(name),
+                bank.doPair(
+                    atom("builtin"),
+                    atom(name),
+                ),
+            ),
+            ground_environment_definitions,
+        );
+    }
+    const ground_environment: Sexpr = .{ .ref = bank.store(bank.doPair(ground_environment_definitions, Sexpr.builtin.nil)) };
     return bank.doRef(bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil)));
 }
 
