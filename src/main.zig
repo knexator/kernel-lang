@@ -87,9 +87,15 @@ test "wrap" {
 
 test "eval" {
     try testHelper(std.testing.allocator,
-        \\ ($define! get-current-environment (wrap ($vau () e e)))
         \\ (eval ($quote (cons 1 2)) (get-current-environment))
     , "(1 . 2)");
+}
+
+test "$lambda" {
+    try testHelper(std.testing.allocator,
+        \\ ($define! foo ($lambda ((a . b)) a))
+        \\ (foo (cons 1 2))
+    , "1");
 }
 
 // test "car" {
@@ -208,6 +214,19 @@ const Builtin = struct {
         );
     }
 
+    pub fn @"$lambda"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const params = arguments.nth(0);
+        const body = arguments.nth(1);
+        return wrap(bank.doList(&.{
+            bank.doList(&.{
+                atom("$vau"),
+                params,
+                atom("_"),
+                body,
+            }),
+        }), env, bank);
+    }
+
     comptime {
         const ExpectedSignature = fn (arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr;
         const expected_info = @typeInfo(ExpectedSignature).@"fn";
@@ -283,6 +302,15 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         );
     }
     const ground_environment: Sexpr = .{ .ref = bank.store(bank.doPair(ground_environment_definitions, Sexpr.builtin.nil)) };
+
+    var parser: Parser = .{ .remaining_text = 
+        \\ ($define! get-current-environment (wrap ($vau () e e)))
+        \\ ($define! list (wrap ($vau x _ x)))
+    };
+    while (parser.next(bank) catch @panic("bad text")) |v| {
+        _ = rawEval(v, ground_environment, bank);
+    }
+
     return bank.doRef(bank.doPair(Sexpr.builtin.nil, bank.doPair(ground_environment, Sexpr.builtin.nil)));
 }
 
@@ -296,7 +324,7 @@ fn lookup(key: Sexpr, env: Sexpr) ?Sexpr {
 
     // self evaluating symbols
     if (isNumber(key.atom.value)) return key;
-    for ([_][]const u8{ "true", "false", "nil" }) |word| {
+    for ([_][]const u8{ "true", "false", "nil", "_" }) |word| {
         if (key.equals(.{ .atom = .{ .value = word } })) return key;
     }
 
@@ -456,6 +484,11 @@ pub const Sexpr = union(enum) {
 
         pub fn doRef(self: *Bank, v: Sexpr) Sexpr {
             return .{ .ref = self.store(v) };
+        }
+
+        pub fn doList(self: *Bank, values: []const Sexpr) Sexpr {
+            if (values.len == 0) return Sexpr.builtin.nil;
+            return self.doPair(values[0], self.doList(values[1..]));
         }
     };
 
