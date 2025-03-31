@@ -15,6 +15,16 @@ test "caaddadr" {
     try std.testing.expect(v.at(.rrr).equals(atom("d")));
 }
 
+test "nth" {
+    var bank = Sexpr.Bank.init(std.testing.allocator);
+    defer bank.deinit();
+    const v = try parseSingle(&bank, "(a b c d)");
+    try expectEqual(v.nth(0), atom("a"));
+    try expectEqual(v.nth(1), atom("b"));
+    try expectEqual(v.nth(2), atom("c"));
+    try expectEqual(v.nth(3), atom("d"));
+}
+
 test "builtin" {
     try testHelper(std.testing.allocator,
         \\ (builtin . foo)
@@ -64,6 +74,10 @@ test "$if" {
     try testHelper(std.testing.allocator,
         \\ ($define! x 1)
         \\ ($if true x y)
+    , "1");
+    try testHelper(std.testing.allocator,
+        \\ ($define! x 1)
+        \\ ($if false y x)
     , "1");
 }
 
@@ -151,8 +165,12 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
     while (parser.next(&bank) catch @panic("bad text")) |v| {
         last_value = rawEval(v, env, &bank);
     }
-    errdefer std.log.err("Expected\n\t{any}\nFound\n\t{any}\n", .{ expected, last_value });
-    try std.testing.expect(last_value.equals(expected));
+    try expectEqual(expected, last_value);
+}
+
+pub fn expectEqual(expected: Sexpr, actual: Sexpr) !void {
+    errdefer std.log.err("Expected\n\t{any}\nFound\n\t{any}\n", .{ expected, actual });
+    try std.testing.expect(actual.equals(expected));
 }
 
 fn atom(v: []const u8) Sexpr {
@@ -186,10 +204,14 @@ const Builtin = struct {
 
     pub fn @"$if"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
         const condition = rawEval(arguments.nth(0), env, bank);
+        std.log.debug("condition: {any}", .{condition});
+        std.log.debug("arguments: {any}", .{arguments});
         if (condition.equals(Sexpr.builtin.true)) {
+            std.log.debug("evaluating true: {any}", .{arguments.nth(1)});
             return rawEval(arguments.nth(1), env, bank);
         } else {
             assertEqual(condition, Sexpr.builtin.false);
+            std.log.debug("evaluating false: {any}", .{arguments.nth(2)});
             return rawEval(arguments.nth(2), env, bank);
         }
     }
@@ -527,7 +549,7 @@ pub const Sexpr = union(enum) {
         assertPair(l);
         var cur = l;
         for (0..index) |_| {
-            cur = l.pair.right.*;
+            cur = cur.pair.right.*;
             assertPair(cur);
         }
         return cur.pair.left.*;
