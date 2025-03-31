@@ -15,6 +15,12 @@ test "caaddadr" {
     try std.testing.expect(v.at(.rrr).equals(atom("d")));
 }
 
+test "builtin" {
+    try testHelper(std.testing.allocator,
+        \\ (builtin . foo)
+    , "(builtin . foo)");
+}
+
 test "cons" {
     try testHelper(std.testing.allocator,
         \\ ($define! a 10)
@@ -214,19 +220,6 @@ const Builtin = struct {
         );
     }
 
-    pub fn @"$lambda"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
-        const params = arguments.nth(0);
-        const body = arguments.nth(1);
-        return wrap(bank.doList(&.{
-            bank.doList(&.{
-                atom("$vau"),
-                params,
-                atom("_"),
-                body,
-            }),
-        }), env, bank);
-    }
-
     comptime {
         const ExpectedSignature = fn (arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr;
         const expected_info = @typeInfo(ExpectedSignature).@"fn";
@@ -306,6 +299,9 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
     var parser: Parser = .{ .remaining_text = 
         \\ ($define! get-current-environment (wrap ($vau () e e)))
         \\ ($define! list (wrap ($vau x _ x)))
+        \\ ($define! $lambda
+        \\   ($vau (params body) env
+        \\     (wrap (eval (list $vau params _ body) env))))
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
         _ = rawEval(v, ground_environment, bank);
@@ -386,6 +382,7 @@ fn rawEval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
         .ref => panic("Don't know how to eval a ref", .{}),
         .atom => return lookup(expr, env) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
+            if (pair.left.*.equals(atom("builtin"))) return expr;
             const operative = rawEval(pair.left.*, env, bank);
             const arguments = pair.right.*;
             if (operative.is(.pair) and operative.at(.l).equals(atom("builtin")) and operative.at(.r).is(.atom)) {
