@@ -137,7 +137,7 @@ pub fn testHelper(gpa: std.mem.Allocator, source: []const u8, expected_raw: []co
     const env = makeKernelStandardEnvironment(&bank);
     var last_value = Sexpr.builtin.@"#inert";
     while (parser.next(&bank) catch @panic("bad text")) |v| {
-        last_value = eval(v, env, &bank);
+        last_value = rawEval(v, env, &bank);
     }
     errdefer std.log.err("Expected\n\t{any}\nFound\n\t{any}\n", .{ expected, last_value });
     try std.testing.expect(last_value.equals(expected));
@@ -153,6 +153,78 @@ fn parseSingle(bank: *Sexpr.Bank, source: []const u8) !Sexpr {
     assert(try parser.next(bank) == null);
     return result;
 }
+
+const Builtin = struct {
+    pub fn @"$define!"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const formal_tree = arguments.nth(0);
+        const value = rawEval(arguments.nth(1), env, bank);
+        bind(formal_tree, value, env, bank);
+        return Sexpr.builtin.@"#inert";
+    }
+
+    pub fn @"$vau"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        return bank.doPair(atom("compiled_vau"), bank.doPair(env, arguments));
+    }
+
+    pub fn cons(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const left = rawEval(arguments.nth(0), env, bank);
+        const right = rawEval(arguments.nth(1), env, bank);
+        return bank.doPair(left, right);
+    }
+
+    pub fn @"$if"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const condition = rawEval(arguments.nth(0), env, bank);
+        if (condition.equals(Sexpr.builtin.true)) {
+            return rawEval(arguments.nth(1), env, bank);
+        } else {
+            assertEqual(condition, Sexpr.builtin.false);
+            return rawEval(arguments.nth(2), env, bank);
+        }
+    }
+
+    pub fn @"=?"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const left = rawEval(arguments.nth(0), env, bank);
+        const right = rawEval(arguments.nth(1), env, bank);
+        return if (left.equals(right)) Sexpr.builtin.true else Sexpr.builtin.false;
+    }
+
+    pub fn @"$quote"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        _ = env;
+        _ = bank;
+        return arguments.nth(0);
+    }
+
+    pub fn wrap(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const vau = rawEval(arguments.nth(0), env, bank);
+        assertEqual(vau.at(.l), atom("compiled_vau"));
+        return bank.doPair(atom("wrapped_vau"), vau);
+    }
+
+    pub fn eval(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        return rawEval(
+            rawEval(arguments.nth(0), env, bank),
+            rawEval(arguments.nth(1), env, bank),
+            bank,
+        );
+    }
+
+    comptime {
+        const ExpectedSignature = fn (arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr;
+        const expected_info = @typeInfo(ExpectedSignature).@"fn";
+        for (@typeInfo(@This()).@"struct".decls) |decl| {
+            const ActualSignature = @TypeOf(@field(@This(), decl.name));
+            const actual_info = @typeInfo(ActualSignature).@"fn";
+
+            if (!(actual_info.is_generic == expected_info.is_generic and
+                actual_info.is_var_args == expected_info.is_var_args and
+                actual_info.return_type == expected_info.return_type and
+                std.mem.eql(std.builtin.Type.Fn.Param, actual_info.params, expected_info.params)))
+            {
+                @compileError(std.fmt.comptimePrint("Bad signature for builtin method {s}", .{decl.name}));
+            }
+        }
+    }
+};
 
 const ground_environment: Sexpr = .{ .ref = @constCast(&Sexpr{ .pair = .{
     .left = &.{ .pair = .{
@@ -264,7 +336,7 @@ pub fn main() !void {
         var parser: Parser = .{ .remaining_text = line };
         while (try parser.next(&bank)) |v| {
             try stdout.print("read: {any}\n", .{v});
-            try stdout.print("eval'd: {any}\n", .{eval(v, env, &bank)});
+            try stdout.print("eval'd: {any}\n", .{rawEval(v, env, &bank)});
         }
         try stdout.print("> ", .{});
         try bw.flush();
@@ -341,50 +413,24 @@ fn bind(definiend: Sexpr, expression: Sexpr, env: Sexpr, bank: *Sexpr.Bank) void
     }
 }
 
-fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+fn rawEval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
     assertEnv(env);
     switch (expr) {
         .ref => panic("Don't know how to eval a ref", .{}),
         .atom => return lookup(expr, env) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
-            const operative = eval(pair.left.*, env, bank);
+            const operative = rawEval(pair.left.*, env, bank);
             const arguments = pair.right.*;
-            if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$define!" } } } })) {
-                const formal_tree = arguments.nth(0);
-                const value = eval(arguments.nth(1), env, bank);
-                bind(formal_tree, value, env, bank);
-                return Sexpr.builtin.@"#inert";
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$vau" } } } })) {
-                return bank.doPair(.{ .atom = .{ .value = "compiled_vau" } }, bank.doPair(env, arguments));
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "cons" } } } })) {
-                const left = eval(arguments.nth(0), env, bank);
-                const right = eval(arguments.nth(1), env, bank);
-                return bank.doPair(left, right);
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$if" } } } })) {
-                const condition = eval(arguments.nth(0), env, bank);
-                if (condition.equals(Sexpr.builtin.true)) {
-                    return eval(arguments.nth(1), env, bank);
-                } else {
-                    assertEqual(condition, Sexpr.builtin.false);
-                    return eval(arguments.nth(2), env, bank);
+            if (operative.is(.pair) and operative.at(.l).equals(atom("builtin")) and operative.at(.r).is(.atom)) {
+                const name = operative.at(.r).atom.value;
+                inline for (@typeInfo(Builtin).@"struct".decls) |decl| {
+                    if (std.mem.eql(u8, decl.name, name)) {
+                        const builtin_fn = @field(Builtin, decl.name);
+                        return builtin_fn(arguments, env, bank);
+                    }
                 }
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "=?" } } } })) {
-                const left = eval(arguments.nth(0), env, bank);
-                const right = eval(arguments.nth(1), env, bank);
-                return if (left.equals(right)) Sexpr.builtin.true else Sexpr.builtin.false;
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "$quote" } } } })) {
-                return arguments.nth(0);
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "wrap" } } } })) {
-                const vau = eval(arguments.nth(0), env, bank);
-                assertEqual(vau.at(.l), atom("compiled_vau"));
-                return bank.doPair(atom("wrapped_vau"), vau);
-            } else if (operative.equals(.{ .pair = .{ .left = &.{ .atom = .{ .value = "builtin" } }, .right = &.{ .atom = .{ .value = "eval" } } } })) {
-                return eval(
-                    eval(arguments.nth(0), env, bank),
-                    eval(arguments.nth(1), env, bank),
-                    bank,
-                );
-            } else if (operative.is(.pair) and operative.at(.l).equals(.{ .atom = .{ .value = "compiled_vau" } })) {
+            }
+            if (operative.is(.pair) and operative.at(.l).equals(.{ .atom = .{ .value = "compiled_vau" } })) {
                 const static_env = operative.at(.rl);
                 const formal_tree = operative.at(.rrl);
                 const dynamic_env_name = operative.at(.rrrl);
@@ -393,11 +439,11 @@ fn eval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
                 var temp_env = bank.doPair(Sexpr.builtin.nil, bank.doPair(static_env, Sexpr.builtin.nil));
                 bind(formal_tree, arguments, .{ .ref = &temp_env }, bank);
                 bind(dynamic_env_name, env, .{ .ref = &temp_env }, bank);
-                return eval(body_expr, .{ .ref = &temp_env }, bank);
+                return rawEval(body_expr, .{ .ref = &temp_env }, bank);
             } else if (operative.is(.pair) and operative.at(.l).equals(.{ .atom = .{ .value = "wrapped_vau" } })) {
                 const vau = operative.at(.r);
                 const evaluated_arguments = evaluateEachArgument(arguments, env, bank);
-                return eval(bank.doPair(bank.doPair(atom("$quote"), bank.doPair(vau, Sexpr.builtin.nil)), evaluated_arguments), env, bank);
+                return rawEval(bank.doPair(bank.doPair(atom("$quote"), bank.doPair(vau, Sexpr.builtin.nil)), evaluated_arguments), env, bank);
             } else {
                 panic("Bad operative: \"{any}\"", .{operative});
             }
@@ -411,7 +457,7 @@ fn evaluateEachArgument(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
         return Sexpr.builtin.nil;
     } else {
         return bank.doPair(
-            eval(arguments.at(.l), env, bank),
+            rawEval(arguments.at(.l), env, bank),
             evaluateEachArgument(arguments.at(.r), env, bank),
         );
     }
