@@ -146,18 +146,32 @@ test "$let" {
     , "1");
 }
 
-// TODO: this test
-test "binaryFromChar" {
+test "apply" {
     try testHelper(std.testing.allocator,
-        \\ (binaryFromChar 6)
-    , "(b0 b1 b1)");
+        \\ (apply ($lambda (x y) (cons y x)) ($quote (1 2)) (make-env))
+    , "(2 . 1)");
+}
+
+test "weird apply" {
+    try testHelper(std.testing.allocator,
+        \\ (apply ($lambda x x) 2 (make-env))
+    , "2");
+}
+
+test "$cond" {
+    try testHelper(std.testing.allocator,
+        \\ ($cond
+        \\   (false 1)
+        \\   ((=? 1 1) 2)
+        \\ )
+    , "2");
 }
 
 // TODO: this test
-// test "apply" {
+// test "binaryFromChar" {
 //     try testHelper(std.testing.allocator,
-//         \\ (apply ($lambda x x) 2)
-//     , "2");
+//         \\ (binaryFromChar 6)
+//     , "(b0 b1 b1)");
 // }
 
 // test "car" {
@@ -327,22 +341,19 @@ const Builtin = struct {
         return last_value;
     }
 
-    // pub fn @"$let"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
-    //     const match = arguments.nth(0);
-    //     const body = arguments.nth(1);
-    //     const pattern = match.at(.l);
-    //     const value = eval(match.at(.r), env, bank);
-    //     make
+    pub fn @"make-env"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        var parent_envs_buffer: std.ArrayList(Sexpr) = .init(std.heap.smp_allocator);
+        defer parent_envs_buffer.deinit();
 
-    //     var last_value = Sexpr.builtin.@"#inert";
-    //     var remaining_args = arguments;
-    //     while (remaining_args.is(.pair)) {
-    //         const head = remaining_args.at(.l);
-    //         remaining_args = remaining_args.at(.r);
-    //         last_value = rawEval(head, env, bank);
-    //     }
-    //     return last_value;
-    // }
+        var remaining_args = arguments;
+        while (remaining_args.is(.pair)) {
+            const head = remaining_args.at(.l);
+            remaining_args = remaining_args.at(.r);
+            parent_envs_buffer.append(rawEval(head, env, bank)) catch @panic("OoM");
+        }
+        const parent_envs_sexpr = bank.doList(parent_envs_buffer.items);
+        return bank.doRef(bank.doPair(Sexpr.builtin.nil, parent_envs_sexpr));
+    }
 
     comptime {
         const ExpectedSignature = fn (arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr;
@@ -428,7 +439,7 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\   ($vau (params body) env
         \\     (wrap (eval (list $vau params _ body) env))))
         \\ ($define! empty? ($lambda (l) (=? l ())))
-        \\ ($define! apply ($lambda (applicative arguments env) 
+        \\ ($define! apply ($lambda (applicative arguments env)
         \\   (eval (cons (unwrap applicative) arguments) env)))
         \\ ($define! $let ($vau ((pattern value) body) env
         \\   (eval (list (list ($quote $lambda) (list pattern) body) value) env)))
@@ -530,7 +541,9 @@ fn rawEval(expr: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
         .ref => panic("Don't know how to eval a ref", .{}),
         .atom => return lookup(expr, env) orelse panic("unbound variable: {any}", .{expr}),
         .pair => |pair| {
-            if (pair.left.*.equals(atom("builtin"))) return expr;
+            inline for (.{ "builtin", "compiled_vau", "wrapped_vau" }) |v| {
+                if (pair.left.*.equals(atom(v))) return expr;
+            }
             const operative = rawEval(pair.left.*, env, bank);
             const arguments = pair.right.*;
             if (operative.is(.pair) and operative.at(.l).equals(atom("builtin")) and operative.at(.r).is(.atom)) {
