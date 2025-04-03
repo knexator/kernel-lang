@@ -118,6 +118,18 @@ test "$lambda" {
     , "1");
 }
 
+test "split" {
+    try testHelper(std.testing.allocator,
+        \\ (split ($quote hola))
+    , "(h o l a)");
+}
+
+test "fuse" {
+    try testHelper(std.testing.allocator,
+        \\ (fuse ($quote (h o l a)))
+    , "hola");
+}
+
 // test "car" {
 //     try testHelper(std.testing.allocator,
 //         \\ ($define! $car ($vau (a . b) _ a))
@@ -240,6 +252,32 @@ const Builtin = struct {
             rawEval(arguments.nth(1), env, bank),
             bank,
         );
+    }
+
+    pub fn split(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const arg = rawEval(arguments.nth(0), env, bank);
+        assertAtom(arg);
+        const value = arg.atom.value;
+        var result = Sexpr.builtin.nil;
+        for (0..value.len) |k| {
+            const i = value.len - k;
+            result = bank.doPair(atom(value[i - 1 .. i]), result);
+        }
+        return result;
+    }
+
+    pub fn fuse(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        var arg = rawEval(arguments.nth(0), env, bank);
+        assertList(arg);
+        bank.stringBegin();
+        while (arg.is(.pair)) {
+            const head = arg.pair.left.*;
+            assertAtom(head);
+            bank.stringAdd(head.atom.value);
+            arg = arg.pair.right.*;
+        }
+        const value = bank.stringEnd();
+        return atom(value);
     }
 
     comptime {
@@ -481,11 +519,36 @@ pub const Sexpr = union(enum) {
 
     pub const Bank = struct {
         pool: std.heap.MemoryPool(Sexpr),
+        strings_arena: std.heap.ArenaAllocator,
+        string_builder: std.ArrayList(u8),
+
         pub fn init(allocator: std.mem.Allocator) Bank {
-            return .{ .pool = .init(allocator) };
+            return .{
+                .pool = .init(allocator),
+                .strings_arena = .init(allocator),
+                .string_builder = .init(allocator),
+            };
         }
+
         pub fn deinit(self: *Bank) void {
             self.pool.deinit();
+            self.strings_arena.deinit();
+            assert(self.string_builder.items.len == 0);
+            self.string_builder.deinit();
+        }
+
+        pub fn stringBegin(self: *Bank) void {
+            assert(self.string_builder.items.len == 0);
+        }
+
+        pub fn stringAdd(self: *Bank, v: []const u8) void {
+            self.string_builder.appendSlice(v) catch @panic("OoM");
+        }
+
+        pub fn stringEnd(self: *Bank) []const u8 {
+            const value = self.strings_arena.allocator().dupe(u8, self.string_builder.items) catch @panic("OoM");
+            self.string_builder.clearRetainingCapacity();
+            return value;
         }
 
         pub fn store(self: *Bank, s: Sexpr) *Sexpr {
