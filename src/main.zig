@@ -100,14 +100,14 @@ test "$car" {
 
 test "wrap" {
     try testHelper(std.testing.allocator,
-        \\ ($define! car (wrap ($vau ((a . b)) _ a)))
-        \\ (car (cons 1 2))
+        \\ ($define! my-car (wrap ($vau ((a . b)) _ a)))
+        \\ (my-car (cons 1 2))
     , "1");
 }
 
 test "eval" {
     try testHelper(std.testing.allocator,
-        \\ (eval ($quote (cons 1 2)) (get-current-environment))
+        \\ (eval ($quote (cons 1 2)) (get-current-env))
     , "(1 . 2)");
 }
 
@@ -167,7 +167,12 @@ test "$cond" {
     , "2");
 }
 
-// TODO: this test
+test "reverse" {
+    try testHelper(std.testing.allocator,
+        \\ (reverse ($quote a b c))
+    , "(c b a)");
+}
+
 // test "binaryFromChar" {
 //     try testHelper(std.testing.allocator,
 //         \\ (binaryFromChar 6)
@@ -431,9 +436,8 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
     }
     const ground_environment: Sexpr = .{ .ref = bank.store(bank.doPair(ground_environment_definitions, Sexpr.builtin.nil)) };
 
-    var parser: Parser = .{
-        .remaining_text =
-        \\ ($define! get-current-environment (wrap ($vau () e e)))
+    var parser: Parser = .{ .remaining_text = 
+        \\ ($define! get-current-env (wrap ($vau () e e)))
         \\ ($define! list (wrap ($vau x _ x)))
         \\ ($define! $lambda
         \\   ($vau (params body) env
@@ -451,16 +455,32 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\         ($if (eval test env)
         \\           (eval body env)
         \\           (apply (wrap $cond) clauses env))))))
-        \\
-        \\ ($define! binaryFromChar ($lambda (char) ($cond
-        \\   ((=? char 0) 0)
-        \\   ((=? char 1) 1)
-        \\   ((=? char 2) 2)
+        \\ ($define! car ($lambda ((a . b)) a))
+        \\ ($define! cdr ($lambda ((a . b)) b))
+        \\ // ($define! concat ($lambda lists ($if (empty? lists) () (concat (car lists) (append)))))
+        \\ ($define! append-element ($lambda (value lst) ($if (empty? lst) (list value) (cons (car lst) (append-element value (cdr lst))))))
+        \\ ($define! reverse ($lambda (lst) ($if (empty? lst) () (append-element (car lst) (reverse (cdr lst))))))
+        \\ 
+        \\ // TODO: use a cool macro here
+        \\ ($define! binary-from-char ($lambda (char) ($cond
+        \\   ((=? char 0) ($quote ()))
+        \\   ((=? char 1) ($quote (b1)))
+        \\   ((=? char 2) ($quote (b0 b1)))
+        \\   ((=? char 3) ($quote (b1 b1)))
+        \\   ((=? char 4) ($quote (b0 b0 b1)))
+        \\   ((=? char 5) ($quote (b1 b0 b1)))
+        \\   ((=? char 6) ($quote (b0 b1 b1)))
+        \\   ((=? char 7) ($quote (b1 b1 b1)))
+        \\   ((=? char 8) ($quote (b0 b0 b0 b1)))
+        \\   ((=? char 9) ($quote (b1 b0 b0 b1)))
         \\ )))
-        // \\ ($define! binaryFromText ($lambda (text) ($sequence
-        // \\   ($define! chars (split text))
-        // \\   ($if (?= (car chars) ($quote +)))
-        // \\ )))
+        \\ ($define! binary-from-text ($lambda (text)
+        \\   (binary-from-base-10 (reverse (split text)))))
+        \\ ($define! binary-from-base-10 ($lambda (digits)
+        \\   ($if (empty? digits) 
+        \\     ()
+        \\     (TODO))))
+        \\ 
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
         _ = rawEval(v, ground_environment, bank);
