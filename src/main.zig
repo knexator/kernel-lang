@@ -140,6 +140,26 @@ test "$sequence" {
     , "(1 . 2)");
 }
 
+test "$let" {
+    try testHelper(std.testing.allocator,
+        \\ ($let (x 1) x)
+    , "1");
+}
+
+// TODO: this test
+test "binaryFromChar" {
+    try testHelper(std.testing.allocator,
+        \\ (binaryFromChar 6)
+    , "(b0 b1 b1)");
+}
+
+// TODO: this test
+// test "apply" {
+//     try testHelper(std.testing.allocator,
+//         \\ (apply ($lambda x x) 2)
+//     , "2");
+// }
+
 // test "car" {
 //     try testHelper(std.testing.allocator,
 //         \\ ($define! $car ($vau (a . b) _ a))
@@ -256,6 +276,12 @@ const Builtin = struct {
         return bank.doPair(atom("wrapped_vau"), vau);
     }
 
+    pub fn unwrap(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        const wrapped_vau = rawEval(arguments.nth(0), env, bank);
+        assertEqual(wrapped_vau.at(.l), atom("wrapped_vau"));
+        return wrapped_vau.at(.r);
+    }
+
     pub fn eval(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
         return rawEval(
             rawEval(arguments.nth(0), env, bank),
@@ -300,6 +326,23 @@ const Builtin = struct {
         }
         return last_value;
     }
+
+    // pub fn @"$let"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+    //     const match = arguments.nth(0);
+    //     const body = arguments.nth(1);
+    //     const pattern = match.at(.l);
+    //     const value = eval(match.at(.r), env, bank);
+    //     make
+
+    //     var last_value = Sexpr.builtin.@"#inert";
+    //     var remaining_args = arguments;
+    //     while (remaining_args.is(.pair)) {
+    //         const head = remaining_args.at(.l);
+    //         remaining_args = remaining_args.at(.r);
+    //         last_value = rawEval(head, env, bank);
+    //     }
+    //     return last_value;
+    // }
 
     comptime {
         const ExpectedSignature = fn (arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr;
@@ -377,12 +420,36 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
     }
     const ground_environment: Sexpr = .{ .ref = bank.store(bank.doPair(ground_environment_definitions, Sexpr.builtin.nil)) };
 
-    var parser: Parser = .{ .remaining_text = 
+    var parser: Parser = .{
+        .remaining_text =
         \\ ($define! get-current-environment (wrap ($vau () e e)))
         \\ ($define! list (wrap ($vau x _ x)))
         \\ ($define! $lambda
         \\   ($vau (params body) env
         \\     (wrap (eval (list $vau params _ body) env))))
+        \\ ($define! empty? ($lambda (l) (=? l ())))
+        \\ ($define! apply ($lambda (applicative arguments env) 
+        \\   (eval (cons (unwrap applicative) arguments) env)))
+        \\ ($define! $let ($vau ((pattern value) body) env
+        \\   (eval (list (list ($quote $lambda) (list pattern) body) value) env)))
+        \\ ($define! $cond
+        \\   ($vau clauses env
+        \\     ($if (empty? clauses)
+        \\       error_NoMatchingCondCase
+        \\       ($let (((test body) . clauses) clauses)
+        \\         ($if (eval test env)
+        \\           (eval body env)
+        \\           (apply (wrap $cond) clauses env))))))
+        \\
+        \\ ($define! binaryFromChar ($lambda (char) ($cond
+        \\   ((=? char 0) 0)
+        \\   ((=? char 1) 1)
+        \\   ((=? char 2) 2)
+        \\ )))
+        // \\ ($define! binaryFromText ($lambda (text) ($sequence
+        // \\   ($define! chars (split text))
+        // \\   ($if (?= (car chars) ($quote +)))
+        // \\ )))
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
         _ = rawEval(v, ground_environment, bank);
