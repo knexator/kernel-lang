@@ -130,6 +130,16 @@ test "fuse" {
     , "hola");
 }
 
+test "$sequence" {
+    try testHelper(std.testing.allocator,
+        \\ ($sequence
+        \\   ($define! x 1)
+        \\   ($define! y 2)
+        \\   ($define! z (cons x y))
+        \\   z)
+    , "(1 . 2)");
+}
+
 // test "car" {
 //     try testHelper(std.testing.allocator,
 //         \\ ($define! $car ($vau (a . b) _ a))
@@ -278,6 +288,17 @@ const Builtin = struct {
         }
         const value = bank.stringEnd();
         return atom(value);
+    }
+
+    pub fn @"$sequence"(arguments: Sexpr, env: Sexpr, bank: *Sexpr.Bank) Sexpr {
+        var last_value = Sexpr.builtin.@"#inert";
+        var remaining_args = arguments;
+        while (remaining_args.is(.pair)) {
+            const head = remaining_args.at(.l);
+            remaining_args = remaining_args.at(.r);
+            last_value = rawEval(head, env, bank);
+        }
+        return last_value;
     }
 
     comptime {
