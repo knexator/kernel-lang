@@ -173,6 +173,24 @@ test "reverse" {
     , "(c b a)");
 }
 
+test "binary-inc" {
+    try testHelper(std.testing.allocator,
+        \\ (binary-inc ($quote (b1 b0 b1)))
+    , "(b0 b1 b1)");
+}
+
+test "binary-add" {
+    try testHelper(std.testing.allocator,
+        \\ (binary-add ($quote (b1 b0 b1)) ($quote (b1 b1)))
+    , "(b0 b0 b0 b1)");
+}
+
+test "binary-from-text" {
+    try testHelper(std.testing.allocator,
+        \\ (binary-from-text ($quote 12))
+    , "(b0 b0 b1 b1)");
+}
+
 // test "binaryFromChar" {
 //     try testHelper(std.testing.allocator,
 //         \\ (binaryFromChar 6)
@@ -461,6 +479,21 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\ ($define! append-element ($lambda (value lst) ($if (empty? lst) (list value) (cons (car lst) (append-element value (cdr lst))))))
         \\ ($define! reverse ($lambda (lst) ($if (empty? lst) () (append-element (car lst) (reverse (cdr lst))))))
         \\ 
+        \\ ($define! binary-inc ($lambda (v) ($cond
+        \\  ((empty? v) ($quote (b1)))
+        \\  ((=? (car v) ($quote b0)) (cons ($quote b1) (cdr v)))
+        \\  ((=? (car v) ($quote b1)) (cons ($quote b0) (binary-inc (cdr v))))
+        \\ )))
+        \\ ($define! binary-add ($lambda (a b) ($cond
+        \\   ((empty? a) b)
+        \\   ((empty? b) a)
+        \\   ((=? (car a) ($quote b0)) (cons (car b) (binary-add (cdr a) (cdr b))))
+        \\   ((=? (car b) ($quote b0)) (cons (car a) (binary-add (cdr a) (cdr b))))
+        \\   (true (cons ($quote b0) (binary-inc (binary-add (cdr a) (cdr b)))))
+        \\ )))
+        \\ ($define! binary-times-2 ($lambda (v) ($if (empty? v) v (cons ($quote b0) v))))
+        \\ ($define! binary-times-10 ($lambda (v) 
+        \\   (binary-times-2 (binary-add v (binary-times-2 (binary-times-2 v))))))
         \\ // TODO: use a cool macro here
         \\ ($define! binary-from-char ($lambda (char) ($cond
         \\   ((=? char 0) ($quote ()))
@@ -479,7 +512,9 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\ ($define! binary-from-base-10 ($lambda (digits)
         \\   ($if (empty? digits) 
         \\     ()
-        \\     (TODO))))
+        \\     ($let (cur (binary-from-char (car digits)))
+        \\       ($let (rest (binary-from-base-10 (cdr digits)))
+        \\         (binary-add cur (binary-times-10 rest)))))))
         \\ 
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
