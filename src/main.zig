@@ -169,7 +169,7 @@ test "$cond" {
 
 test "reverse" {
     try testHelper(std.testing.allocator,
-        \\ (reverse ($quote a b c))
+        \\ (reverse ($quote (a b c)))
     , "(c b a)");
 }
 
