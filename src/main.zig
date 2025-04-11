@@ -191,6 +191,12 @@ test "binary-from-text" {
     , "(b0 b0 b1 b1)");
 }
 
+test "+" {
+    try testHelper(std.testing.allocator,
+        \\ (+ 78 34)
+    , "112");
+}
+
 // test "binaryFromChar" {
 //     try testHelper(std.testing.allocator,
 //         \\ (binaryFromChar 6)
@@ -507,6 +513,8 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\   ((=? char 8) ($quote (b0 b0 b0 b1)))
         \\   ((=? char 9) ($quote (b1 b0 b0 b1)))
         \\ )))
+        \\ ($define! text-from-binary ($lambda (binary-digits)
+        \\   (fuse (reverse (decimal-from-binary binary-digits)))))
         \\ ($define! binary-from-text ($lambda (text)
         \\   (binary-from-decimal (reverse (split text)))))
         \\ ($define! binary-from-decimal ($lambda (digits)
@@ -548,33 +556,47 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\       ($let (cur-hex (hex-from-nibble cur-nibble))
         \\         ($let (rest-hex (hex-from-binary rest-digits))
         \\           (cons cur-hex rest-hex)))))))
-        \\ // TODO: bugfix
+        \\ ($define! decimal-increment ($lambda (decimal-digits)
+        \\   ($if (empty? decimal-digits) 
+        \\     ($quote (1))
+        \\     ($let ((cur . rest) decimal-digits)
+        \\       ($let ((new_digit . increment?) ($cond
+        \\         ((=? cur ($quote 0)) ($quote (1 . false)))
+        \\         ((=? cur ($quote 1)) ($quote (2 . false)))
+        \\         ((=? cur ($quote 2)) ($quote (3 . false)))
+        \\         ((=? cur ($quote 3)) ($quote (4 . false)))
+        \\         ((=? cur ($quote 4)) ($quote (5 . false)))
+        \\         ((=? cur ($quote 5)) ($quote (6 . false)))
+        \\         ((=? cur ($quote 6)) ($quote (7 . false)))
+        \\         ((=? cur ($quote 7)) ($quote (8 . false)))
+        \\         ((=? cur ($quote 8)) ($quote (9 . false)))
+        \\         ((=? cur ($quote 9)) ($quote (0 . true)))
+        \\       )) (cons new_digit ($if increment? (decimal-increment rest) rest)))))))
+        \\ ($define! decimal-duplicate ($lambda (decimal-digits)
+        \\   ($if (empty? decimal-digits)
+        \\     ()
+        \\     ($let ((cur . rest) decimal-digits)
+        \\       ($let ((new_digit . carry-10?) ($cond
+        \\         ((=? cur ($quote 0)) ($quote (0 . false)))
+        \\         ((=? cur ($quote 1)) ($quote (2 . false)))
+        \\         ((=? cur ($quote 2)) ($quote (4 . false)))
+        \\         ((=? cur ($quote 3)) ($quote (6 . false)))
+        \\         ((=? cur ($quote 4)) ($quote (8 . false)))
+        \\         ((=? cur ($quote 5)) ($quote (0 . true)))
+        \\         ((=? cur ($quote 6)) ($quote (2 . true)))
+        \\         ((=? cur ($quote 7)) ($quote (4 . true)))
+        \\         ((=? cur ($quote 8)) ($quote (6 . true)))
+        \\         ((=? cur ($quote 9)) ($quote (8 . true)))
+        \\       )) (cons new_digit ($if carry-10? (decimal-increment (decimal-duplicate rest)) (decimal-duplicate rest))))))))
         \\ ($define! decimal-from-binary ($lambda (binary-digits)
         \\   ($if (empty? binary-digits)
         \\     ()
-        \\     ($let ((cur-nibble . rest-digits) (take-nibble binary-digits))
-        \\       ($let (cur-hex (hex-from-nibble cur-nibble))
-        \\         ($let ((cur-digit . add-ten?) ($cond
-        \\           ((=? cur-hex ($quote x0)) ($quote (0 . false)))
-        \\           ((=? cur-hex ($quote x1)) ($quote (1 . false)))
-        \\           ((=? cur-hex ($quote x2)) ($quote (2 . false)))
-        \\           ((=? cur-hex ($quote x3)) ($quote (3 . false)))
-        \\           ((=? cur-hex ($quote x4)) ($quote (4 . false)))
-        \\           ((=? cur-hex ($quote x5)) ($quote (5 . false)))
-        \\           ((=? cur-hex ($quote x6)) ($quote (6 . false)))
-        \\           ((=? cur-hex ($quote x7)) ($quote (7 . false)))
-        \\           ((=? cur-hex ($quote x8)) ($quote (8 . false)))
-        \\           ((=? cur-hex ($quote x9)) ($quote (9 . false)))
-        \\           ((=? cur-hex ($quote xA)) ($quote (0 . true)))
-        \\           ((=? cur-hex ($quote xB)) ($quote (1 . true)))
-        \\           ((=? cur-hex ($quote xC)) ($quote (2 . true)))
-        \\           ((=? cur-hex ($quote xD)) ($quote (3 . true)))
-        \\           ((=? cur-hex ($quote xE)) ($quote (4 . true)))
-        \\           ((=? cur-hex ($quote xF)) ($quote (5 . true)))
-        \\         )) 
-        \\           ($let (rest (decimal-from-binary ($if add-ten? (binary-add rest-digits ($quote (b1))) rest-digits)))
-        \\             (cons cur-digit rest))))))))
-        \\ ($define! + ($lambda (a b) (decimal-from-binary (binary-add (binary-from-text a) (binary-from-text b)))))
+        \\     ($let ((cur . rest) binary-digits)
+        \\       ($let (result (decimal-duplicate (decimal-from-binary rest)))
+        \\         ($cond
+        \\           ((=? cur ($quote b0)) result)
+        \\           ((=? cur ($quote b1)) (decimal-increment result))))))))
+        \\ ($define! + ($lambda (a b) (text-from-binary (binary-add (binary-from-text a) (binary-from-text b)))))
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
         _ = rawEval(v, ground_environment, bank);
