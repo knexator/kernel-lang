@@ -179,6 +179,12 @@ test "binary-inc" {
     , "(b0 b1 b1)");
 }
 
+test "binary-dec" {
+    try testHelper(std.testing.allocator,
+        \\ (binary-dec ($quote (b0 b1 b1)))
+    , "(b1 b0 b1)");
+}
+
 test "binary-add" {
     try testHelper(std.testing.allocator,
         \\ (binary-add ($quote (b1 b0 b1)) ($quote (b1 b1)))
@@ -195,6 +201,12 @@ test "+" {
     try testHelper(std.testing.allocator,
         \\ (+ 78 34)
     , "112");
+}
+
+test "*" {
+    try testHelper(std.testing.allocator,
+        \\ (* 12 13)
+    , "156");
 }
 
 // test "binaryFromChar" {
@@ -490,6 +502,11 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\  ((=? (car v) ($quote b0)) (cons ($quote b1) (cdr v)))
         \\  ((=? (car v) ($quote b1)) (cons ($quote b0) (binary-inc (cdr v))))
         \\ )))
+        \\ ($define! binary-dec ($lambda (v) ($cond
+        \\   ((empty? v) error-Underflow)
+        \\   ((=? (car v) ($quote b1)) (cons ($quote b0) (cdr v)))
+        \\   ((=? (car v) ($quote b0)) (cons ($quote b1) (binary-dec (cdr v))))
+        \\ )))
         \\ ($define! binary-add ($lambda (a b) ($cond
         \\   ((empty? a) b)
         \\   ((empty? b) a)
@@ -597,6 +614,16 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\           ((=? cur ($quote b0)) result)
         \\           ((=? cur ($quote b1)) (decimal-increment result))))))))
         \\ ($define! + ($lambda (a b) (text-from-binary (binary-add (binary-from-text a) (binary-from-text b)))))
+        \\ ($define! binary-zero? ($lambda (a) ($cond
+        \\  ((empty? a) true)
+        \\  ((=? (car a) ($quote b0)) (binary-zero? (cdr a)))
+        \\  ((=? (car a) ($quote b1)) false)
+        \\ )))
+        \\ ($define! binary-mul ($lambda (a b) ($cond
+        \\   ((binary-zero? a) ())
+        \\   ((binary-zero? b) ())
+        \\   (true (binary-add a (binary-mul a (binary-dec b)))))))
+        \\ ($define! * ($lambda (a b) (text-from-binary (binary-mul (binary-from-text a) (binary-from-text b)))))
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
         _ = rawEval(v, ground_environment, bank);
