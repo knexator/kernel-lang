@@ -531,7 +531,9 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\   ((=? char 9) ($quote (b1 b0 b0 b1)))
         \\ )))
         \\ ($define! text-from-binary ($lambda (binary-digits)
-        \\   (fuse (reverse (decimal-from-binary binary-digits)))))
+        \\   ($if (binary-zero? binary-digits)
+        \\     0
+        \\     (fuse (reverse (decimal-from-binary binary-digits))))))
         \\ ($define! binary-from-text ($lambda (text)
         \\   (binary-from-decimal (reverse (split text)))))
         \\ ($define! binary-from-decimal ($lambda (digits)
@@ -623,7 +625,9 @@ fn makeKernelStandardEnvironment(bank: *Sexpr.Bank) Sexpr {
         \\   ((binary-zero? a) ())
         \\   ((binary-zero? b) ())
         \\   (true (binary-add a (binary-mul a (binary-dec b)))))))
+        \\ ($define! - ($lambda (a b) ($if (=? b 1) (text-from-binary (binary-dec (binary-from-text a))) error-TODO)))
         \\ ($define! * ($lambda (a b) (text-from-binary (binary-mul (binary-from-text a) (binary-from-text b)))))
+        \\ ($define! factorial ($lambda (n) ($if (=? n 0) 1 (* n (factorial (- n 1))))))
     };
     while (parser.next(bank) catch @panic("bad text")) |v| {
         _ = rawEval(v, ground_environment, bank);
